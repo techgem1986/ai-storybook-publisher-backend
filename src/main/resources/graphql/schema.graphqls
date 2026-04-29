@@ -1,0 +1,27 @@
+type StoryBook {
+    id: ID!
+    title: String!
+    createdAt: String!
+    status: String!
+    pdfStatus: String
+    lastStatus: String
+    pages: [StoryPage!]!
+    pdfPath: String
+}
+
+type StoryPage {
+    pageNumber: Int!
+    text: String!
+    imageUrl: String!
+}
+
+type Query {
+    getStoryBook(id: ID!): StoryBook
+    getAllStoryBooks: [StoryBook!]!
+}
+
+type Mutation {
+    generateStoryBook(title: String!): StoryBook!
+    downloadStoryBookPDF(id: ID!): String!
+    deleteStoryBook(id: ID!): Boolean!
+}
