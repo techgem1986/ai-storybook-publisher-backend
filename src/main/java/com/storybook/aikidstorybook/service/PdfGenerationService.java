@@ -14,8 +14,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import javax.imageio.ImageIO;
+import java.awt.Color;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -39,7 +41,9 @@ public class PdfGenerationService {
     private StatusEmitterService statusEmitterService;
 
     @Async
-    public void generatePdf(StoryBook storyBook) {
+    @Transactional
+    public void generatePdf(Long bookId) {
+        StoryBook storyBook = storyBookRepository.findByIdWithPages(bookId).orElseThrow();
         logger.info("Starting PDF generation for book ID: {}", storyBook.getId());
         try {
             storyBook.setPdfStatus("IN_PROGRESS");
@@ -76,7 +80,7 @@ public class PdfGenerationService {
             List<StoryPage> pages = storyBook.getPages();
             for (int i = 0; i < pages.size(); i++) {
                 updateStatus(storyBook, "Adding page " + (i + 1) + " of " + pages.size() + " to PDF...");
-                addStoryPage(document, pages.get(i));
+                addStoryPage(document, pages.get(i), storyBook);
             }
 
             // Save PDF to a temporary file
@@ -108,7 +112,7 @@ public class PdfGenerationService {
         }
     }
 
-    private void addStoryPage(PDDocument document, StoryPage storyPageData) throws IOException {
+    private void addStoryPage(PDDocument document, StoryPage storyPageData, StoryBook storyBook) throws IOException {
         PDPage page = new PDPage(PDRectangle.A4);
         document.addPage(page);
 
@@ -125,13 +129,29 @@ public class PdfGenerationService {
             }
 
             // Add Text Overlay with Wrapping
-            drawWrappedText(contentStream, storyPageData.getText());
+            drawWrappedText(contentStream, storyPageData.getText(), storyBook);
         }
     }
 
-    private void drawWrappedText(PDPageContentStream contentStream, String text) throws IOException {
-        float fontSize = 18;
-        float leading = 22;
+    private void drawWrappedText(PDPageContentStream contentStream, String text, StoryBook storyBook) throws IOException {
+        float fontSize = storyBook.getFontSize() != null ? storyBook.getFontSize().floatValue() : 18;
+        String fontStyle = storyBook.getFontStyle() != null ? storyBook.getFontStyle() : "HELVETICA";
+        String fontColorStr = storyBook.getFontColor() != null ? storyBook.getFontColor() : "#000000";
+        String textBg = storyBook.getTextBackground() != null ? storyBook.getTextBackground() : "TRANSPARENT";
+
+        PDType1Font font = PDType1Font.HELVETICA;
+        if ("HELVETICA_BOLD".equals(fontStyle)) font = PDType1Font.HELVETICA_BOLD;
+        else if ("TIMES_ROMAN".equals(fontStyle)) font = PDType1Font.TIMES_ROMAN;
+        else if ("COURIER".equals(fontStyle)) font = PDType1Font.COURIER;
+
+        Color fontColor = Color.BLACK;
+        try {
+            fontColor = Color.decode(fontColorStr);
+        } catch (Exception e) {
+            // fallback
+        }
+
+        float leading = fontSize * 1.2f;
         float margin = 50;
         float width = PDRectangle.A4.getWidth() - 2 * margin;
         float startX = margin;
@@ -142,7 +162,7 @@ public class PdfGenerationService {
         StringBuilder line = new StringBuilder();
 
         for (String word : words) {
-            float size = fontSize * PDType1Font.HELVETICA.getStringWidth(line + word) / 1000;
+            float size = fontSize * font.getStringWidth(line + word) / 1000;
             if (size > width) {
                 lines.add(line.toString());
                 line = new StringBuilder(word + " ");
@@ -152,13 +172,22 @@ public class PdfGenerationService {
         }
         lines.add(line.toString());
 
+        // Draw Background if WHITE
+        if ("WHITE".equalsIgnoreCase(textBg)) {
+            float boxHeight = lines.size() * leading + 20;
+            contentStream.setNonStrokingColor(Color.WHITE);
+            contentStream.addRect(startX - 10, startY - 10, width + 20, boxHeight);
+            contentStream.fill();
+        }
+
         contentStream.beginText();
-        contentStream.setFont(PDType1Font.HELVETICA_BOLD, fontSize);
+        contentStream.setFont(font, fontSize);
+        contentStream.setNonStrokingColor(fontColor);
         contentStream.setLeading(leading);
         contentStream.newLineAtOffset(startX, startY);
 
         for (String l : lines) {
-            contentStream.showText(l);
+            contentStream.showText(l.trim());
             contentStream.newLine();
         }
 

@@ -7,12 +7,26 @@ type StoryBook {
     lastStatus: String
     pages: [StoryPage!]!
     pdfPath: String
+    description: String
+    ageGroup: String
+    writingStyle: String
+    numberOfPages: Int
+    fontColor: String
+    fontSize: Int
+    fontStyle: String
+    textBackground: String
 }
 
 type StoryPage {
+    id: ID
     pageNumber: Int!
     text: String!
-    imageUrl: String!
+    imageUrl: String
+}
+
+input StoryPageInput {
+    pageNumber: Int!
+    text: String!
 }
 
 type Query {
@@ -21,7 +35,33 @@ type Query {
 }
 
 type Mutation {
-    generateStoryBook(title: String!): StoryBook!
+    generateStoryBook(
+        title: String!, 
+        description: String, 
+        ageGroup: String, 
+        writingStyle: String, 
+        numberOfPages: Int
+    ): StoryBook!
+    
+    generateStoryDraft(
+        title: String!,
+        description: String,
+        ageGroup: String,
+        writingStyle: String,
+        numberOfPages: Int
+    ): StoryBook!
+
+    updateStoryContent(
+        id: ID!,
+        pages: [StoryPageInput!]!,
+        fontColor: String,
+        fontSize: Int,
+        fontStyle: String,
+        textBackground: String
+    ): StoryBook!
+
+    finalizeAndGenerateImages(id: ID!): StoryBook!
+
     downloadStoryBookPDF(id: ID!): String!
     deleteStoryBook(id: ID!): Boolean!
 }
