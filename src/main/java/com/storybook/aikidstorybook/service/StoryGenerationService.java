@@ -16,6 +16,7 @@ import org.springframework.retry.annotation.Retryable;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpServerErrorException;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
@@ -71,9 +72,9 @@ public class StoryGenerationService {
                 StoryPage page = new StoryPage(i + 1, storyPages.get(i), imageUrl);
                 newPages.add(page);
                 
-                // Add a 15-second delay between image URL generation steps
+                // Add a 60-second delay between image URL generation steps
                 try {
-                    Thread.sleep(15000);
+                    Thread.sleep(60000);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
@@ -141,7 +142,7 @@ public class StoryGenerationService {
                 page.setImageUrl(imageUrl);
                 
                 try {
-                    Thread.sleep(15000);
+                    Thread.sleep(30000);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
@@ -262,12 +263,17 @@ public class StoryGenerationService {
 
     private String pollForImage(String generationId) throws InterruptedException {
         long startTime = System.currentTimeMillis();
-        long timeout = 120000; // 2 minutes
+        long timeout = 180000; // 3 minutes
 
         while (System.currentTimeMillis() - startTime < timeout) {
-            RestTemplate restTemplate = new RestTemplate();
+            // Configure RestTemplate with extended timeouts for Leonardo API
+            SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+            requestFactory.setConnectTimeout(30000); // 30 seconds connection timeout
+            requestFactory.setReadTimeout(120000); // 2 minutes read timeout
+            RestTemplate restTemplate = new RestTemplate(requestFactory);
             HttpHeaders headers = new HttpHeaders();
             headers.setBearerAuth(leonardoApiKey);
+            headers.add("accept", "application/json");
             HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
 
             ResponseEntity<Map> response = restTemplate.exchange(
@@ -298,28 +304,37 @@ public class StoryGenerationService {
         throw new RuntimeException("Image generation timed out.");
     }
 
+    @Retryable(
+            value = {RestClientException.class, HttpServerErrorException.class},
+            maxAttempts = 2,
+            backoff = @Backoff(delay = 3000)
+    )
     private String generateImageForPage(String storyText) {
+        String prompt = "cartoon style, colorful, children book illustration, " + storyText + ", friendly, happy, no text";
+        String encodedPrompt = null;
         try {
             // Use Leonardo AI for professional quality children's book illustrations
-            RestTemplate restTemplate = new RestTemplate();
+            encodedPrompt = java.net.URLEncoder.encode(prompt, "UTF-8");
+            SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+            requestFactory.setConnectTimeout(60000); // 30 seconds connection timeout
+            requestFactory.setReadTimeout(120000); // 2 minutes read timeout
+            RestTemplate restTemplate = new RestTemplate(requestFactory);
             
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
             headers.setBearerAuth(leonardoApiKey);
             
             Map<String, Object> requestBody = new HashMap<>();
-            requestBody.put("prompt", "cartoon style, colorful, children book illustration, " + storyText + ", friendly, happy, no text");
+            requestBody.put("prompt", prompt);
             requestBody.put("modelId", "b2614463-296c-462a-9586-aafdb8f00e36");
             requestBody.put("num_images", 1);
-            requestBody.put("width", 1472);
-            requestBody.put("height", 832);
-            requestBody.put("contrast", 3.5);
-            requestBody.put("ultra", true);
-            requestBody.put("styleUUID", "111dc692-d470-4eec-b791-3475abac4c46");
-            requestBody.put("enhancePrompt", true);
+            requestBody.put("width", 832);
+            requestBody.put("height", 1248);
+            requestBody.put("promptMagic", true);
+            requestBody.put("presetStyle", "VIBRANT");
             
             HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
-            
+
             ResponseEntity<Map> response = restTemplate.postForEntity(
                 "https://cloud.leonardo.ai/api/rest/v1/generations",
                 request,
@@ -330,20 +345,20 @@ public class StoryGenerationService {
                 Map<String, Object> generationData = (Map<String, Object>) response.getBody().get("sdGenerationJob");
                 if (generationData != null && generationData.get("generationId") != null) {
                     String generationId = (String) generationData.get("generationId");
+                    logger.info("Polling for Image");
                     return pollForImage(generationId);
                 }
             }
+            return "https://picsum.photos/800/600?random=" + System.currentTimeMillis();
+
             
+        } catch (Exception e) {
+            logger.warn("Failed to generate image with Leonardo AI ({}), using fallback image", e.getMessage());
             // Fallback to Pollinations if Leonardo fails
-            String encodedPrompt = java.net.URLEncoder.encode("cartoon style, colorful, children book illustration, " + storyText + ", friendly, happy, no text", "UTF-8");
             return String.format("https://image.pollinations.ai/prompt/%s?width=800&height=600&seed=%d", 
                 encodedPrompt, 
                 System.currentTimeMillis()
             );
-            
-        } catch (Exception e) {
-            logger.warn("Failed to generate image with Leonardo AI, using fallback", e);
-            return "https://picsum.photos/800/600?random=" + System.currentTimeMillis();
         }
     }
 }
