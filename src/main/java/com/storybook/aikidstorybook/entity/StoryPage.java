@@ -11,10 +11,10 @@ public class StoryPage {
 
     private int pageNumber;
 
-    @Column(length = 2000)
+    @Column(columnDefinition = "TEXT")
     private String text;
 
-    @Column(length = 1000)
+    @Column(columnDefinition = "TEXT")
     private String imageUrl;
 
     @ManyToOne(fetch = FetchType.LAZY)

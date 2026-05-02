@@ -12,9 +12,9 @@ import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import javax.imageio.ImageIO;
 import java.awt.Color;
@@ -22,6 +22,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.net.URI;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -40,8 +41,10 @@ public class PdfGenerationService {
     @Autowired
     private StatusEmitterService statusEmitterService;
 
+    @Value("${pollinations.api.key:demo}")
+    private String pollinationsApiKey;
+
     @Async
-    @Transactional
     public void generatePdf(Long bookId) {
         StoryBook storyBook = storyBookRepository.findByIdWithPages(bookId).orElseThrow();
         logger.info("Starting PDF generation for book ID: {}", storyBook.getId());
@@ -81,6 +84,13 @@ public class PdfGenerationService {
             for (int i = 0; i < pages.size(); i++) {
                 updateStatus(storyBook, "Adding page " + (i + 1) + " of " + pages.size() + " to PDF...");
                 addStoryPage(document, pages.get(i), storyBook);
+                
+                // Add a 15-second delay between pages to avoid rate limits
+                try {
+                    Thread.sleep(15000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
             }
 
             // Save PDF to a temporary file
@@ -118,14 +128,57 @@ public class PdfGenerationService {
 
         try (PDPageContentStream contentStream = new PDPageContentStream(document, page)) {
             // Draw Image as background
-            try {
-                BufferedImage bufferedImage = ImageIO.read(new URL(storyPageData.getImageUrl()));
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                ImageIO.write(bufferedImage, "png", baos);
-                PDImageXObject pdImage = PDImageXObject.createFromByteArray(document, baos.toByteArray(), "page-image");
-                contentStream.drawImage(pdImage, 0, 0, PDRectangle.A4.getWidth(), PDRectangle.A4.getHeight());
-            } catch (Exception e) {
-                // Could not load image, leave background blank
+            String imageUrl = storyPageData.getImageUrl();
+            if (imageUrl != null && !imageUrl.isEmpty()) {
+                boolean success = false;
+                int maxRetries = 3;
+                int retryCount = 0;
+                long waitTime = 2000;
+
+                while (!success && retryCount < maxRetries) {
+                    try {
+                        logger.info("Loading image for page (Attempt {}/{}): {}", retryCount + 1, maxRetries, imageUrl);
+                        // Pollinations public image API doesn't require any API keys or authentication
+                        java.net.HttpURLConnection connection = (java.net.HttpURLConnection) URI.create(imageUrl).toURL().openConnection();
+                        connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
+                        connection.setConnectTimeout(15000);
+                        connection.setReadTimeout(15000);
+                        
+                        int responseCode = connection.getResponseCode();
+                        if (responseCode == 429) {
+                            throw new RuntimeException("Rate limited (429)");
+                        }
+
+                        try (java.io.InputStream inputStream = connection.getInputStream()) {
+                            BufferedImage bufferedImage = ImageIO.read(inputStream);
+                            if (bufferedImage != null) {
+                                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                                ImageIO.write(bufferedImage, "png", baos);
+                                PDImageXObject pdImage = PDImageXObject.createFromByteArray(document, baos.toByteArray(), "page-image");
+                                contentStream.drawImage(pdImage, 0, 0, PDRectangle.A4.getWidth(), PDRectangle.A4.getHeight());
+                                logger.info("Successfully added image to PDF page.");
+                                success = true;
+                            } else {
+                                logger.warn("ImageIO.read returned null for URL: {}", imageUrl);
+                                break; // Don't retry if image data is invalid
+                            }
+                        }
+                    } catch (Exception e) {
+                        retryCount++;
+                        logger.warn("Attempt {} failed to load image from URL: {}. Error: {}", retryCount, imageUrl, e.getMessage());
+                        if (retryCount < maxRetries) {
+                            try {
+                                Thread.sleep(waitTime);
+                                waitTime *= 2; // Exponential backoff
+                            } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt();
+                                break;
+                            }
+                        }
+                    }
+                }
+            } else {
+                logger.warn("No image URL found for page.");
             }
 
             // Add Text Overlay with Wrapping
@@ -138,6 +191,9 @@ public class PdfGenerationService {
         String fontStyle = storyBook.getFontStyle() != null ? storyBook.getFontStyle() : "HELVETICA";
         String fontColorStr = storyBook.getFontColor() != null ? storyBook.getFontColor() : "#000000";
         String textBg = storyBook.getTextBackground() != null ? storyBook.getTextBackground() : "TRANSPARENT";
+
+        // Sanitize text to remove newlines
+        String sanitizedText = text.replaceAll("\\r\\n|\\r|\\n", " ");
 
         PDType1Font font = PDType1Font.HELVETICA;
         if ("HELVETICA_BOLD".equals(fontStyle)) font = PDType1Font.HELVETICA_BOLD;
@@ -158,7 +214,7 @@ public class PdfGenerationService {
         float startY = 150; // Position text at the bottom of the page
 
         List<String> lines = new ArrayList<>();
-        String[] words = text.split(" ");
+        String[] words = sanitizedText.split(" ");
         StringBuilder line = new StringBuilder();
 
         for (String word : words) {

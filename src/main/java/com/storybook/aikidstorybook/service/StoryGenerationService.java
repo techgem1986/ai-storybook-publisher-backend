@@ -11,12 +11,18 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.HttpServerErrorException;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -34,11 +40,10 @@ public class StoryGenerationService {
     @Autowired
     private StatusEmitterService statusEmitterService;
 
-    @Value("${gemini.api.key:demo}")
-    private String geminiApiKey;
+    @Value("${leonardo.api.key}")
+    private String leonardoApiKey;
 
     @Async
-    @Transactional
     public void generateCompleteStoryBook(Long bookId) {
         StoryBook storyBook = storyBookRepository.findByIdWithPages(bookId).orElseThrow();
         logger.info("Starting generation for book: {} (ID: {})", storyBook.getTitle(), storyBook.getId());
@@ -53,14 +58,30 @@ public class StoryGenerationService {
             updateStatus(storyBook, "Story text generated. Now creating magical illustrations...");
 
             int totalPages = storyPages.size();
+            // Clear existing pages if any (useful for retries)
+            storyBook.getPages().clear();
+            
+            List<StoryPage> newPages = new ArrayList<>();
+            
             // Generate images for each page
             for (int i = 0; i < totalPages; i++) {
                 logger.info("Generating image for page {} of book ID: {}", i + 1, storyBook.getId());
                 updateStatus(storyBook, "Creating illustration for page " + (i + 1) + " of " + totalPages + "...");
                 String imageUrl = generateImageForPage(storyPages.get(i));
                 StoryPage page = new StoryPage(i + 1, storyPages.get(i), imageUrl);
-                storyBook.addPage(page);
+                newPages.add(page);
+                
+                // Add a 15-second delay between image URL generation steps
+                try {
+                    Thread.sleep(15000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
             }
+            
+            // Add all pages at once after full generation to prevent duplicates
+            storyBook.getPages().clear();
+            storyBook.getPages().addAll(newPages);
 
             storyBook.setStatus("COMPLETED");
             updateStatus(storyBook, "Story content ready! Starting PDF creation...");
@@ -77,7 +98,6 @@ public class StoryGenerationService {
     }
 
     @Async
-    @Transactional
     public void generateStoryDraft(Long bookId) {
         StoryBook storyBook = storyBookRepository.findByIdWithPages(bookId).orElseThrow();
         logger.info("Generating story draft for book: {} (ID: {})", storyBook.getTitle(), storyBook.getId());
@@ -86,6 +106,7 @@ public class StoryGenerationService {
             updateStatus(storyBook, "Generating story text for your review...");
 
             List<String> storyPages = generateStoryPages(storyBook);
+            storyBook.getPages().clear();
             for (int i = 0; i < storyPages.size(); i++) {
                 StoryPage page = new StoryPage(i + 1, storyPages.get(i), null);
                 storyBook.addPage(page);
@@ -104,7 +125,6 @@ public class StoryGenerationService {
     }
 
     @Async
-    @Transactional
     public void generateIllustrationsAndPdf(Long bookId) {
         StoryBook storyBook = storyBookRepository.findByIdWithPages(bookId).orElseThrow();
         logger.info("Starting illustration generation for book ID: {}", storyBook.getId());
@@ -119,6 +139,12 @@ public class StoryGenerationService {
                 updateStatus(storyBook, "Creating illustration for page " + (i + 1) + " of " + totalPages + "...");
                 String imageUrl = generateImageForPage(page.getText());
                 page.setImageUrl(imageUrl);
+                
+                try {
+                    Thread.sleep(15000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
             }
 
             storyBook.setStatus("COMPLETED");
@@ -140,6 +166,11 @@ public class StoryGenerationService {
         statusEmitterService.sendStatus(storyBook.getId(), status);
     }
 
+    @Retryable(
+            value = {RestClientException.class, HttpServerErrorException.class},
+            maxAttempts = 4,
+            backoff = @Backoff(delay = 2000, multiplier = 2)
+    )
     private List<String> generateStoryPages(StoryBook storyBook) {
         List<String> pages = new ArrayList<>();
         String title = storyBook.getTitle();
@@ -166,21 +197,24 @@ public class StoryGenerationService {
 
             String prompt = promptBuilder.toString();
 
+            // Pollinations AI public endpoint doesn't require authentication
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
 
-            // Using Pollinations.ai Text API (Free, no key required)
+            // Pollinations.ai public Text API expects standard OpenAI messages format
             Map<String, Object> requestBody = Map.of(
+                    "model", "openai",
                     "messages", List.of(
                             Map.of("role", "system", "content", "You are a creative children's book author."),
                             Map.of("role", "user", "content", prompt)
                     ),
-                    "model", "openai" // Options: openai, mistral, llama
+                    "stream", false
             );
 
             HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
 
             logger.debug("AI Request body: {}", requestBody);
+            // Use Pollinations public text endpoint that doesn't require authentication
             ResponseEntity<String> response = restTemplate.postForEntity(
                     "https://text.pollinations.ai/",
                     request,
@@ -202,8 +236,11 @@ public class StoryGenerationService {
                 }
             }
 
+        } catch (HttpServerErrorException e) {
+            logger.warn("AI Generation failed for book title: {}. Retrying... Error: {}", title, e.getMessage());
+            throw e; // Re-throw to trigger retry
         } catch (Exception e) {
-            logger.warn("AI Generation failed for book title: {}. Using fallback story. Error: {}", title, e.getMessage());
+            logger.error("AI Generation failed for book title: {}. Using fallback story. Error: {}", title, e.getMessage());
             
             // Even if API fails, we make the fallback use user inputs
             String storyTheme = (description != null && !description.trim().isEmpty()) ? description : title;
@@ -223,15 +260,89 @@ public class StoryGenerationService {
         return pages.subList(0, numberOfPages);
     }
 
+    private String pollForImage(String generationId) throws InterruptedException {
+        long startTime = System.currentTimeMillis();
+        long timeout = 120000; // 2 minutes
+
+        while (System.currentTimeMillis() - startTime < timeout) {
+            RestTemplate restTemplate = new RestTemplate();
+            HttpHeaders headers = new HttpHeaders();
+            headers.setBearerAuth(leonardoApiKey);
+            HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
+
+            ResponseEntity<Map> response = restTemplate.exchange(
+                "https://cloud.leonardo.ai/api/rest/v1/generations/" + generationId,
+                org.springframework.http.HttpMethod.GET,
+                requestEntity,
+                Map.class
+            );
+
+            if (response.getBody() != null) {
+                Map<String, Object> generationData = (Map<String, Object>) response.getBody().get("generations_by_pk");
+                if (generationData != null) {
+                    String status = (String) generationData.get("status");
+                    if ("COMPLETE".equals(status)) {
+                        List<LinkedHashMap<String, String>> generatedImages = (List<LinkedHashMap<String, String>>) generationData.get("generated_images");
+                        if (generatedImages != null && !generatedImages.isEmpty()) {
+                            return generatedImages.get(0).get("url");
+                        }
+                    } else if ("FAILED".equals(status)) {
+                        throw new RuntimeException("Image generation failed.");
+                    }
+                }
+            }
+
+            Thread.sleep(10000); // Wait 10 seconds before polling again
+        }
+
+        throw new RuntimeException("Image generation timed out.");
+    }
+
     private String generateImageForPage(String storyText) {
         try {
-            // Using Pollination.ai free Stable Diffusion API
-            return "https://image.pollinations.ai/prompt/" +
-                    java.net.URLEncoder.encode(
-                            "cartoon style, colorful, children book illustration, " + storyText + ", friendly, happy, no text",
-                            "UTF-8"
-                    ) + "?width=800&height=600&seed=" + System.currentTimeMillis();
+            // Use Leonardo AI for professional quality children's book illustrations
+            RestTemplate restTemplate = new RestTemplate();
+            
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.setBearerAuth(leonardoApiKey);
+            
+            Map<String, Object> requestBody = new HashMap<>();
+            requestBody.put("prompt", "cartoon style, colorful, children book illustration, " + storyText + ", friendly, happy, no text");
+            requestBody.put("modelId", "b2614463-296c-462a-9586-aafdb8f00e36");
+            requestBody.put("num_images", 1);
+            requestBody.put("width", 1472);
+            requestBody.put("height", 832);
+            requestBody.put("contrast", 3.5);
+            requestBody.put("ultra", true);
+            requestBody.put("styleUUID", "111dc692-d470-4eec-b791-3475abac4c46");
+            requestBody.put("enhancePrompt", true);
+            
+            HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
+            
+            ResponseEntity<Map> response = restTemplate.postForEntity(
+                "https://cloud.leonardo.ai/api/rest/v1/generations",
+                request,
+                Map.class
+            );
+            
+            if (response.getBody() != null) {
+                Map<String, Object> generationData = (Map<String, Object>) response.getBody().get("sdGenerationJob");
+                if (generationData != null && generationData.get("generationId") != null) {
+                    String generationId = (String) generationData.get("generationId");
+                    return pollForImage(generationId);
+                }
+            }
+            
+            // Fallback to Pollinations if Leonardo fails
+            String encodedPrompt = java.net.URLEncoder.encode("cartoon style, colorful, children book illustration, " + storyText + ", friendly, happy, no text", "UTF-8");
+            return String.format("https://image.pollinations.ai/prompt/%s?width=800&height=600&seed=%d", 
+                encodedPrompt, 
+                System.currentTimeMillis()
+            );
+            
         } catch (Exception e) {
+            logger.warn("Failed to generate image with Leonardo AI, using fallback", e);
             return "https://picsum.photos/800/600?random=" + System.currentTimeMillis();
         }
     }

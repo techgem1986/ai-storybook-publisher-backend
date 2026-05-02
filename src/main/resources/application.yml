@@ -45,3 +45,6 @@ ai:
     width: 800
     height: 600
     style: "cartoon colorful kid friendly vibrant"
+leonardo:
+  api:
+    key: ${LEONARDO_API_KEY}

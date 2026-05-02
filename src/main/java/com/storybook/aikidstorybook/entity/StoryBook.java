@@ -39,6 +39,7 @@ public class StoryBook {
     private String lastStatus;
 
     @OneToMany(mappedBy = "storyBook", cascade = CascadeType.ALL, orphanRemoval = true)
+    @OrderBy("pageNumber ASC")
     private List<StoryPage> pages = new ArrayList<>();
 
     private String pdfPath;
