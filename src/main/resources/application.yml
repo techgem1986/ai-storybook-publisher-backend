@@ -47,4 +47,4 @@ ai:
     style: "cartoon colorful kid friendly vibrant"
 image:
   generator:
-    url: ${IMAGE_GENERATOR_URL:http://image-generator:5000}
+    url: ${IMAGE_GENERATOR_URL:http://python:5000}

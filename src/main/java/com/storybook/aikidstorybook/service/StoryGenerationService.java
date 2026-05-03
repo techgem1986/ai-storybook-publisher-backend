@@ -42,7 +42,7 @@ public class StoryGenerationService {
     @Autowired
     private StatusEmitterService statusEmitterService;
 
-    @Value("${image.generator.url:http://image-generator:5000}")
+    @Value("${image.generator.url:http://python:5000}")
     private String imageGeneratorUrl;
 
     @Async
