@@ -128,8 +128,8 @@ public class PdfGenerationService {
 
         try (PDPageContentStream contentStream = new PDPageContentStream(document, page)) {
             // Draw Image as background
-            String imageUrl = storyPageData.getImageUrl();
-            if (imageUrl != null && !imageUrl.isEmpty()) {
+            String imageData = storyPageData.getImageUrl();
+            if (imageData != null && !imageData.isEmpty()) {
                 boolean success = false;
                 int maxRetries = 3;
                 int retryCount = 0;
@@ -137,35 +137,51 @@ public class PdfGenerationService {
 
                 while (!success && retryCount < maxRetries) {
                     try {
-                        logger.info("Loading image for page (Attempt {}/{}): {}", retryCount + 1, maxRetries, imageUrl);
-                        // Pollinations public image API doesn't require any API keys or authentication
-                        java.net.HttpURLConnection connection = (java.net.HttpURLConnection) URI.create(imageUrl).toURL().openConnection();
-                        connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
-                        connection.setConnectTimeout(15000);
-                        connection.setReadTimeout(15000);
+                        logger.info("Loading image for page (Attempt {}/{})", retryCount + 1, maxRetries);
                         
-                        int responseCode = connection.getResponseCode();
-                        if (responseCode == 429) {
-                            throw new RuntimeException("Rate limited (429)");
+                        BufferedImage bufferedImage = null;
+                        
+                        // Check if it's a base64 encoded image
+                        if (imageData.startsWith("data:image")) {
+                            logger.info("Processing base64 encoded image");
+                            // Extract base64 part after comma
+                            String base64Part = imageData.split(",")[1];
+                            byte[] imageBytes = java.util.Base64.getDecoder().decode(base64Part);
+                            try (java.io.ByteArrayInputStream bais = new java.io.ByteArrayInputStream(imageBytes)) {
+                                bufferedImage = ImageIO.read(bais);
+                            }
+                        } else {
+                            // Fallback to URL loading for external images
+                            logger.info("Loading image from URL: {}", imageData);
+                            java.net.HttpURLConnection connection = (java.net.HttpURLConnection) URI.create(imageData).toURL().openConnection();
+                            connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
+                            connection.setConnectTimeout(15000);
+                            connection.setReadTimeout(15000);
+                            
+                            int responseCode = connection.getResponseCode();
+                            if (responseCode == 429) {
+                                throw new RuntimeException("Rate limited (429)");
+                            }
+
+                            try (java.io.InputStream inputStream = connection.getInputStream()) {
+                                bufferedImage = ImageIO.read(inputStream);
+                            }
                         }
 
-                        try (java.io.InputStream inputStream = connection.getInputStream()) {
-                            BufferedImage bufferedImage = ImageIO.read(inputStream);
-                            if (bufferedImage != null) {
-                                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                                ImageIO.write(bufferedImage, "png", baos);
-                                PDImageXObject pdImage = PDImageXObject.createFromByteArray(document, baos.toByteArray(), "page-image");
-                                contentStream.drawImage(pdImage, 0, 0, PDRectangle.A4.getWidth(), PDRectangle.A4.getHeight());
-                                logger.info("Successfully added image to PDF page.");
-                                success = true;
-                            } else {
-                                logger.warn("ImageIO.read returned null for URL: {}", imageUrl);
-                                break; // Don't retry if image data is invalid
-                            }
+                        if (bufferedImage != null) {
+                            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                            ImageIO.write(bufferedImage, "png", baos);
+                            PDImageXObject pdImage = PDImageXObject.createFromByteArray(document, baos.toByteArray(), "page-image");
+                            contentStream.drawImage(pdImage, 0, 0, PDRectangle.A4.getWidth(), PDRectangle.A4.getHeight());
+                            logger.info("Successfully added image to PDF page.");
+                            success = true;
+                        } else {
+                            logger.warn("ImageIO.read returned null for image data");
+                            break; // Don't retry if image data is invalid
                         }
                     } catch (Exception e) {
                         retryCount++;
-                        logger.warn("Attempt {} failed to load image from URL: {}. Error: {}", retryCount, imageUrl, e.getMessage());
+                        logger.warn("Attempt {} failed to load image. Error: {}", retryCount, e.getMessage());
                         if (retryCount < maxRetries) {
                             try {
                                 Thread.sleep(waitTime);

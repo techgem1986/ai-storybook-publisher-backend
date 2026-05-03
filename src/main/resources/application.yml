@@ -45,6 +45,6 @@ ai:
     width: 800
     height: 600
     style: "cartoon colorful kid friendly vibrant"
-leonardo:
-  api:
-    key: ${LEONARDO_API_KEY}
+image:
+  generator:
+    url: ${IMAGE_GENERATOR_URL:http://image-generator:5000}

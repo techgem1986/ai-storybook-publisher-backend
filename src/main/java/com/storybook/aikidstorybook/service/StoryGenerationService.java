@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.retry.annotation.Backoff;
@@ -41,8 +42,8 @@ public class StoryGenerationService {
     @Autowired
     private StatusEmitterService statusEmitterService;
 
-    @Value("${leonardo.api.key}")
-    private String leonardoApiKey;
+    @Value("${image.generator.url:http://image-generator:5000}")
+    private String imageGeneratorUrl;
 
     @Async
     public void generateCompleteStoryBook(Long bookId) {
@@ -261,103 +262,70 @@ public class StoryGenerationService {
         return pages.subList(0, numberOfPages);
     }
 
-    private String pollForImage(String generationId) throws InterruptedException {
-        long startTime = System.currentTimeMillis();
-        long timeout = 180000; // 3 minutes
 
-        while (System.currentTimeMillis() - startTime < timeout) {
-            // Configure RestTemplate with extended timeouts for Leonardo API
-            SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-            requestFactory.setConnectTimeout(30000); // 30 seconds connection timeout
-            requestFactory.setReadTimeout(120000); // 2 minutes read timeout
-            RestTemplate restTemplate = new RestTemplate(requestFactory);
-            HttpHeaders headers = new HttpHeaders();
-            headers.setBearerAuth(leonardoApiKey);
-            headers.add("accept", "application/json");
-            HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
 
-            ResponseEntity<Map> response = restTemplate.exchange(
-                "https://cloud.leonardo.ai/api/rest/v1/generations/" + generationId,
-                org.springframework.http.HttpMethod.GET,
-                requestEntity,
-                Map.class
-            );
-
-            if (response.getBody() != null) {
-                Map<String, Object> generationData = (Map<String, Object>) response.getBody().get("generations_by_pk");
-                if (generationData != null) {
-                    String status = (String) generationData.get("status");
-                    if ("COMPLETE".equals(status)) {
-                        List<LinkedHashMap<String, String>> generatedImages = (List<LinkedHashMap<String, String>>) generationData.get("generated_images");
-                        if (generatedImages != null && !generatedImages.isEmpty()) {
-                            return generatedImages.get(0).get("url");
-                        }
-                    } else if ("FAILED".equals(status)) {
-                        throw new RuntimeException("Image generation failed.");
-                    }
-                }
-            }
-
-            Thread.sleep(10000); // Wait 10 seconds before polling again
-        }
-
-        throw new RuntimeException("Image generation timed out.");
-    }
-
-    @Retryable(
-            value = {RestClientException.class, HttpServerErrorException.class},
-            maxAttempts = 2,
-            backoff = @Backoff(delay = 3000)
-    )
-    private String generateImageForPage(String storyText) {
+    public String generateImageForPage(String storyText) throws InterruptedException {
         String prompt = "cartoon style, colorful, children book illustration, " + storyText + ", friendly, happy, no text";
         String encodedPrompt = null;
         try {
-            // Use Leonardo AI for professional quality children's book illustrations
             encodedPrompt = java.net.URLEncoder.encode(prompt, "UTF-8");
-            SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-            requestFactory.setConnectTimeout(60000); // 30 seconds connection timeout
-            requestFactory.setReadTimeout(120000); // 2 minutes read timeout
-            RestTemplate restTemplate = new RestTemplate(requestFactory);
-            
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.setBearerAuth(leonardoApiKey);
-            
-            Map<String, Object> requestBody = new HashMap<>();
-            requestBody.put("prompt", prompt);
-            requestBody.put("modelId", "b2614463-296c-462a-9586-aafdb8f00e36");
-            requestBody.put("num_images", 1);
-            requestBody.put("width", 832);
-            requestBody.put("height", 1248);
-            requestBody.put("promptMagic", true);
-            requestBody.put("presetStyle", "VIBRANT");
-            
-            HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
 
-            ResponseEntity<Map> response = restTemplate.postForEntity(
-                "https://cloud.leonardo.ai/api/rest/v1/generations",
-                request,
-                Map.class
-            );
-            
-            if (response.getBody() != null) {
-                Map<String, Object> generationData = (Map<String, Object>) response.getBody().get("sdGenerationJob");
-                if (generationData != null && generationData.get("generationId") != null) {
-                    String generationId = (String) generationData.get("generationId");
-                    logger.info("Polling for Image");
-                    return pollForImage(generationId);
+            try {
+                SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+                requestFactory.setConnectTimeout(30000);
+                requestFactory.setReadTimeout(60000);
+                RestTemplate restTemplate = new RestTemplate(requestFactory);
+
+                HttpHeaders headers = new HttpHeaders();
+                headers.setContentType(MediaType.APPLICATION_JSON);
+
+                Map<String, Object> requestBody = new HashMap<>();
+                requestBody.put("prompt", prompt);
+                requestBody.put("width", 1024);
+                requestBody.put("height", 768);
+                requestBody.put("return_type", "base64");
+
+                HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
+
+                String endpoint = imageGeneratorUrl + "/generate-image";
+                logger.info("Calling image generator service at {} with prompt: {}", endpoint, prompt);
+                logger.debug("Image generator request body: {}", requestBody);
+
+                ResponseEntity<Map> response = restTemplate.postForEntity(endpoint, request, Map.class);
+                logger.info("Image generator response status: {}", response.getStatusCode());
+                logger.debug("Image generator response body received successfully");
+
+                if (response.getBody() != null) {
+                    Object success = response.getBody().get("success");
+                    if (Boolean.TRUE.equals(success) && response.getBody().get("image") instanceof String) {
+                        String base64Image = (String) response.getBody().get("image");
+                        logger.info("Image generator returned base64 encoded image successfully");
+                        return base64Image;
+                    }
+                    logger.warn("Image generator returned an unexpected payload: {}", response.getBody());
+                } else {
+                    logger.warn("Image generator returned null body");
                 }
-            }
-            return "https://picsum.photos/800/600?random=" + System.currentTimeMillis();
 
-            
-        } catch (Exception e) {
-            logger.warn("Failed to generate image with Leonardo AI ({}), using fallback image", e.getMessage());
-            // Fallback to Pollinations if Leonardo fails
-            return String.format("https://image.pollinations.ai/prompt/%s?width=800&height=600&seed=%d", 
-                encodedPrompt, 
-                System.currentTimeMillis()
+            } catch (HttpServerErrorException e) {
+                logger.error("Image generator server error: {}", e.getStatusCode());
+                logger.error("Response body: {}", e.getResponseBodyAsString());
+            } catch (RestClientException e) {
+                logger.error("Image generator rest exception: {}", e.getMessage(), e);
+            } catch (Exception e) {
+                logger.error("Unexpected error calling image generator: {}", e.getMessage(), e);
+            }
+
+            logger.info("Using Pollinations fallback for image generation");
+            return String.format("https://image.pollinations.ai/prompt/%s?width=1024&height=768&seed=%d",
+                    encodedPrompt,
+                    System.currentTimeMillis()
+            );
+        } catch (java.io.UnsupportedEncodingException e) {
+            logger.error("Failed to encode prompt, using placeholder image", e);
+            return String.format("https://image.pollinations.ai/prompt/children%s book illustration?width=1024&height=768&seed=%d",
+                    "%27s",
+                    System.currentTimeMillis()
             );
         }
     }
