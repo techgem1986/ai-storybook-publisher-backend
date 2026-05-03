@@ -1,6 +1,7 @@
 package com.storybook.aikidstorybook.controller;
 
 import com.storybook.aikidstorybook.entity.StoryBook;
+import com.storybook.aikidstorybook.entity.StoryPage;
 import com.storybook.aikidstorybook.repository.StoryBookRepository;
 import com.storybook.aikidstorybook.service.StoryGenerationService;
 import org.slf4j.Logger;
@@ -11,6 +12,7 @@ import org.springframework.graphql.data.method.annotation.MutationMapping;
 import org.springframework.graphql.data.method.annotation.QueryMapping;
 import org.springframework.stereotype.Controller;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -27,12 +29,32 @@ public class StoryBookResolver {
 
     @QueryMapping
     public StoryBook getStoryBook(@Argument Long id) {
-        return storyBookRepository.findById(id).orElse(null);
+        StoryBook book = storyBookRepository.findById(id).orElse(null);
+        return normalizePages(book);
     }
 
     @QueryMapping
     public List<StoryBook> getAllStoryBooks() {
-        return storyBookRepository.findAll();
+        return storyBookRepository.findAll().stream()
+                .map(this::normalizePages)
+                .toList();
+    }
+
+    private StoryBook normalizePages(StoryBook storyBook) {
+        if (storyBook == null || storyBook.getPages() == null) {
+            return storyBook;
+        }
+
+        Map<Integer, StoryPage> uniquePages = new LinkedHashMap<>();
+        for (StoryPage page : storyBook.getPages()) {
+            if (!uniquePages.containsKey(page.getPageNumber())) {
+                uniquePages.put(page.getPageNumber(), page);
+            }
+        }
+
+        storyBook.getPages().clear();
+        storyBook.getPages().addAll(uniquePages.values());
+        return storyBook;
     }
 
     @MutationMapping
@@ -41,19 +63,19 @@ public class StoryBookResolver {
             @Argument String description,
             @Argument String ageGroup,
             @Argument String writingStyle,
+            @Argument String genre,
             @Argument Integer numberOfPages) {
         logger.info("Received request to generate story book with title: {}", title);
-        // Create new story book record
         StoryBook storyBook = new StoryBook(title);
         storyBook.setDescription(description);
         storyBook.setAgeGroup(ageGroup);
         storyBook.setWritingStyle(writingStyle);
-        storyBook.setNumberOfPages(numberOfPages != null ? numberOfPages : 5); // Default to 5 if not provided
+        storyBook.setGenre(genre);
+        storyBook.setNumberOfPages(numberOfPages != null ? numberOfPages : 5);
         
         storyBook = storyBookRepository.save(storyBook);
         logger.info("Saved initial story book record with ID: {}", storyBook.getId());
 
-        // Start async generation process
         try {
             storyGenerationService.generateCompleteStoryBook(storyBook.getId());
             logger.info("Triggered async generation for book ID: {}", storyBook.getId());
@@ -61,7 +83,6 @@ public class StoryBookResolver {
             logger.error("Failed to trigger async generation for book ID: {}", storyBook.getId(), e);
         }
 
-        // Return immediately with pending status
         return storyBook;
     }
 
@@ -71,12 +92,14 @@ public class StoryBookResolver {
             @Argument String description,
             @Argument String ageGroup,
             @Argument String writingStyle,
+            @Argument String genre,
             @Argument Integer numberOfPages) {
         logger.info("Received request to generate story draft with title: {}", title);
         StoryBook storyBook = new StoryBook(title);
         storyBook.setDescription(description);
         storyBook.setAgeGroup(ageGroup);
         storyBook.setWritingStyle(writingStyle);
+        storyBook.setGenre(genre);
         storyBook.setNumberOfPages(numberOfPages != null ? numberOfPages : 5);
         
         storyBook = storyBookRepository.save(storyBook);

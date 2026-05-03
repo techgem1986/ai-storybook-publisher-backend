@@ -42,6 +42,15 @@ public class StoryGenerationService {
     @Autowired
     private StatusEmitterService statusEmitterService;
 
+    @Autowired
+    private StoryValidationService storyValidationService;
+
+    @Value("${pollinations.api.key:}")
+    private String pollinationsApiKey;
+
+    @Value("${pollinations.text.url:https://text.pollinations.ai}")
+    private String pollinationsTextUrl;
+
     @Value("${image.generator.url:http://python:5000}")
     private String imageGeneratorUrl;
 
@@ -83,7 +92,9 @@ public class StoryGenerationService {
             
             // Add all pages at once after full generation to prevent duplicates
             storyBook.getPages().clear();
-            storyBook.getPages().addAll(newPages);
+            newPages.forEach(storyBook::addPage);
+            normalizePageCollection(storyBook);
+            storyBookRepository.save(storyBook);
 
             storyBook.setStatus("COMPLETED");
             updateStatus(storyBook, "Story content ready! Starting PDF creation...");
@@ -113,7 +124,8 @@ public class StoryGenerationService {
                 StoryPage page = new StoryPage(i + 1, storyPages.get(i), null);
                 storyBook.addPage(page);
             }
-
+            normalizePageCollection(storyBook);
+            storyBookRepository.save(storyBook);
             storyBook.setStatus("REVIEW_PENDING");
             updateStatus(storyBook, "Story draft ready for your review!");
             statusEmitterService.complete(storyBook.getId());
@@ -134,6 +146,7 @@ public class StoryGenerationService {
             storyBook.setStatus("GENERATING");
             updateStatus(storyBook, "Starting magical illustrations...");
 
+            normalizePageCollection(storyBook);
             List<StoryPage> pages = storyBook.getPages();
             int totalPages = pages.size();
             for (int i = 0; i < totalPages; i++) {
@@ -149,6 +162,7 @@ public class StoryGenerationService {
                 }
             }
 
+            storyBookRepository.save(storyBook);
             storyBook.setStatus("COMPLETED");
             updateStatus(storyBook, "Illustrations ready! Starting PDF creation...");
 
@@ -163,8 +177,7 @@ public class StoryGenerationService {
 
     private void updateStatus(StoryBook storyBook, String status) {
         logger.debug("Updating status for book ID {}: {}", storyBook.getId(), status);
-        storyBook.setLastStatus(status);
-        storyBookRepository.save(storyBook);
+        storyBookRepository.updateStatus(storyBook.getId(), storyBook.getStatus(), status);
         statusEmitterService.sendStatus(storyBook.getId(), status);
     }
 
@@ -174,95 +187,240 @@ public class StoryGenerationService {
             backoff = @Backoff(delay = 2000, multiplier = 2)
     )
     private List<String> generateStoryPages(StoryBook storyBook) {
-        List<String> pages = new ArrayList<>();
+        if (storyBook == null) {
+            return List.of();
+        }
+
+        prepareStoryMetadata(storyBook);
+
         String title = storyBook.getTitle();
         String description = storyBook.getDescription();
-        String ageGroup = storyBook.getAgeGroup() != null ? storyBook.getAgeGroup() : "5-8 year old";
-        String writingStyle = storyBook.getWritingStyle() != null ? storyBook.getWritingStyle() : "happy and magical";
+        String ageGroup = resolveAgeGroup(storyBook.getAgeGroup());
+        String writingStyle = resolveWritingStyle(storyBook.getWritingStyle());
+        String genre = resolveGenre(storyBook.getGenre());
         int numberOfPages = storyBook.getNumberOfPages() != null ? storyBook.getNumberOfPages() : 5;
 
+        StringBuilder promptBuilder = new StringBuilder();
+        promptBuilder.append("Write a ").append(genre).append(" story for ").append(ageGroup)
+                .append(" children titled '").append(title).append("'. ");
+        if (description != null && !description.trim().isEmpty()) {
+            promptBuilder.append("The story should be about: ").append(description).append(". ");
+        }
+        if (storyBook.getOutline() != null && !storyBook.getOutline().trim().isEmpty()) {
+            promptBuilder.append("Use this outline: ").append(storyBook.getOutline()).append(". ");
+        }
+        promptBuilder.append("The tone should be ").append(writingStyle).append(". ");
+        promptBuilder.append("Split the story into exactly ").append(numberOfPages).append(" short pages. ");
+        promptBuilder.append("Each page should be 2-3 simple sentences. Use simple, age-appropriate vocabulary. ");
+        promptBuilder.append("Return only the ").append(numberOfPages).append(" pages separated by '---PAGE---' marker. No extra text, no titles, no page numbers.");
+
+        List<String> pages = callAiTextPages(promptBuilder.toString(), numberOfPages);
+
+        List<String> validatedPages = new ArrayList<>();
+        for (String page : pages) {
+            String safeText = storyValidationService.filterUnsafeWords(page);
+            safeText = storyValidationService.correctCommonGrammar(safeText);
+            validatedPages.add(safeText);
+        }
+
+        List<String> warnings = storyValidationService.validateReadability(validatedPages, ageGroup);
+        if (!warnings.isEmpty()) {
+            logger.warn("Story readability warnings for book {}: {}", title, warnings);
+            storyBook.setLastStatus(String.join(" ", warnings));
+            storyBookRepository.save(storyBook);
+        }
+
+        return validatedPages;
+    }
+
+    private void prepareStoryMetadata(StoryBook storyBook) {
+        if (storyBook == null) {
+            return;
+        }
+
+        if (storyBook.getOutline() != null && !storyBook.getOutline().isBlank() &&
+                storyBook.getMainCharacters() != null && !storyBook.getMainCharacters().isBlank()) {
+            return;
+        }
+
+        String ageGroup = resolveAgeGroup(storyBook.getAgeGroup());
+        String writingStyle = resolveWritingStyle(storyBook.getWritingStyle());
+        String genre = resolveGenre(storyBook.getGenre());
+        String description = storyBook.getDescription();
+
+        StringBuilder promptBuilder = new StringBuilder();
+        promptBuilder.append("You are a gentle children's book editor. Create a structured story plan for a ")
+                .append(genre).append(" story titled '").append(storyBook.getTitle()).append("' for ")
+                .append(ageGroup).append(". ");
+        if (description != null && !description.trim().isEmpty()) {
+            promptBuilder.append("The story should be about ").append(description).append(". ");
+        }
+        promptBuilder.append("Provide the output with the following sections exactly: Outline:, Main Characters:, Setting:, Theme:, Moral:. ");
+        promptBuilder.append("Keep each section one or two sentences, easy to read and child friendly.");
+
+        String metadataText = callAiForText(promptBuilder.toString());
+        if (metadataText == null || metadataText.isBlank()) {
+            metadataText = buildFallbackMetadata(storyBook, ageGroup, genre, writingStyle, description);
+        }
+
+        storyBook.setOutline(extractSection(metadataText, "Outline:", "Main Characters:", "Outline"));
+        storyBook.setMainCharacters(extractSection(metadataText, "Main Characters:", "Setting:", "A playful group of friends"));
+        storyBook.setSetting(extractSection(metadataText, "Setting:", "Theme:", "A bright, friendly world"));
+        storyBook.setTheme(extractSection(metadataText, "Theme:", "Moral:", "Friendship and kindness"));
+        storyBook.setMoral(extractSection(metadataText, "Moral:", null, "Be kind to others."));
+        storyBook.setGenre(genre);
+        storyBook.setWritingStyle(writingStyle);
+        storyBookRepository.save(storyBook);
+    }
+
+    private String resolveAgeGroup(String ageGroup) {
+        if (ageGroup == null) {
+            return "5-7";
+        }
+        return switch (ageGroup) {
+            case "3-5", "5-7", "7-9", "9-12" -> ageGroup;
+            default -> "5-7";
+        };
+    }
+
+    private String resolveGenre(String genre) {
+        if (genre == null || genre.isBlank()) {
+            return "fantasy";
+        }
+        return genre;
+    }
+
+    private String resolveWritingStyle(String writingStyle) {
+        if (writingStyle == null || writingStyle.isBlank()) {
+            return "gentle and whimsical";
+        }
+        return writingStyle;
+    }
+
+    private List<String> callAiTextPages(String prompt, int numberOfPages) {
+        List<String> pages = new ArrayList<>();
         try {
-            logger.info("Calling Pollinations AI for book title: {}", title);
-            RestTemplate restTemplate = new RestTemplate();
-
-            StringBuilder promptBuilder = new StringBuilder();
-            promptBuilder.append("Write a beautiful story for ").append(ageGroup).append(" children titled '").append(title).append("'. ");
-            
-            if (description != null && !description.trim().isEmpty()) {
-                promptBuilder.append("The story should be about: ").append(description).append(". ");
+            String text = callAiForText(prompt);
+            if (text != null && !text.isBlank()) {
+                String[] splitPages = text.split("---PAGE---");
+                for (String page : splitPages) {
+                    String trimmedPage = page.trim();
+                    if (!trimmedPage.isEmpty()) {
+                        trimmedPage = trimmedPage.replaceAll("^Page \\d+:?", "").trim();
+                        pages.add(trimmedPage);
+                    }
+                }
             }
-            
-            promptBuilder.append("The writing style should be ").append(writingStyle).append(". ");
-            promptBuilder.append("Split the story into exactly ").append(numberOfPages).append(" short pages. ");
-            promptBuilder.append("Each page should be 2-3 simple sentences. Use simple words suitable for the age group. ");
-            promptBuilder.append("CRITICAL: Return only the ").append(numberOfPages).append(" pages separated by '---PAGE---' marker. No extra text, no titles, no page numbers.");
+        } catch (Exception e) {
+            logger.warn("Page generation AI call failed for prompt {}: {}", prompt, e.getMessage());
+        }
 
-            String prompt = promptBuilder.toString();
+        if (pages.isEmpty()) {
+            pages.add("Once upon a time, a gentle story began in a warm, colorful world.");
+        }
 
-            // Pollinations AI public endpoint doesn't require authentication
+        while (pages.size() < numberOfPages) {
+            pages.add("The adventure continued with gentle, simple sentences that children can enjoy.");
+        }
+        return pages.subList(0, numberOfPages);
+    }
+
+    private String callAiForText(String prompt) {
+        try {
+            logger.info("Calling Pollinations AI for prompt");
+            RestTemplate restTemplate = new RestTemplate();
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
+            if (pollinationsApiKey != null && !pollinationsApiKey.isBlank()) {
+                headers.setBearerAuth(pollinationsApiKey);
+            }
 
-            // Pollinations.ai public Text API expects standard OpenAI messages format
             Map<String, Object> requestBody = Map.of(
                     "model", "openai",
                     "messages", List.of(
                             Map.of("role", "system", "content", "You are a creative children's book author."),
                             Map.of("role", "user", "content", prompt)
                     ),
+                    "temperature", 0.8,
+                    "max_tokens", 500,
                     "stream", false
             );
-
             HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
-
-            logger.debug("AI Request body: {}", requestBody);
-            // Use Pollinations public text endpoint that doesn't require authentication
-            ResponseEntity<String> response = restTemplate.postForEntity(
-                    "https://text.pollinations.ai/",
+            ResponseEntity<Map> response = restTemplate.postForEntity(
+                    pollinationsTextUrl + "/openai",
                     request,
-                    String.class
+                    Map.class
             );
 
             if (response.getBody() != null) {
-                String text = response.getBody();
-                logger.debug("AI Response: {}", text);
-
-                String[] splitPages = text.split("---PAGE---");
-                for (String page : splitPages) {
-                    String trimmedPage = page.trim();
-                    if (!trimmedPage.isEmpty()) {
-                        // Remove potential Markdown or extra markers
-                        trimmedPage = trimmedPage.replaceAll("^Page \\d+:?", "").trim();
-                        pages.add(trimmedPage);
+                Object choices = response.getBody().get("choices");
+                if (choices instanceof List<?> choicesList && !choicesList.isEmpty()) {
+                    Object firstChoice = choicesList.get(0);
+                    if (firstChoice instanceof Map<?, ?> firstChoiceMap) {
+                        Object message = firstChoiceMap.get("message");
+                        if (message instanceof Map<?, ?> messageMap) {
+                            Object content = messageMap.get("content");
+                            if (content instanceof String) {
+                                return (String) content;
+                            }
+                        }
+                        Object text = firstChoiceMap.get("text");
+                        if (text instanceof String) {
+                            return (String) text;
+                        }
                     }
                 }
             }
-
-        } catch (HttpServerErrorException e) {
-            logger.warn("AI Generation failed for book title: {}. Retrying... Error: {}", title, e.getMessage());
-            throw e; // Re-throw to trigger retry
+            logger.warn("Text AI service returned no valid content for prompt");
+            return null;
         } catch (Exception e) {
-            logger.error("AI Generation failed for book title: {}. Using fallback story. Error: {}", title, e.getMessage());
-            
-            // Even if API fails, we make the fallback use user inputs
-            String storyTheme = (description != null && !description.trim().isEmpty()) ? description : title;
-            
-            pages.add("Once upon a time, there was a story about " + title + ". It was a " + writingStyle + " adventure for a " + ageGroup + ".");
-            pages.add("The story was all about " + storyTheme + ". Every page was filled with " + writingStyle + " surprises.");
-            pages.add("The characters in " + title + " were very brave and kind. They loved to explore and learn new things together.");
-            pages.add("They found that " + storyTheme + " was the most important part of their journey. It brought them so much joy.");
-            pages.add("And so, the " + writingStyle + " tale of " + title + " ended happily. Everyone felt " + writingStyle + " and content. The End!");
+            logger.error("Text AI service failed: {}", e.getMessage());
+            return null;
         }
-
-        // Ensure exactly the requested number of pages
-        while (pages.size() < numberOfPages) {
-            pages.add("And so the " + writingStyle + " adventure of " + title + " continued with more happy moments.");
-        }
-
-        return pages.subList(0, numberOfPages);
     }
 
+    private String extractSection(String text, String startToken, String endToken, String fallback) {
+        if (text == null) {
+            return fallback;
+        }
 
+        int startIndex = text.indexOf(startToken);
+        if (startIndex == -1) {
+            return fallback;
+        }
+        startIndex += startToken.length();
+        int endIndex = endToken != null ? text.indexOf(endToken, startIndex) : text.length();
+        if (endIndex == -1) {
+            endIndex = text.length();
+        }
+
+        String section = text.substring(startIndex, endIndex).trim();
+        return section.isEmpty() ? fallback : section;
+    }
+
+    private String buildFallbackMetadata(StoryBook storyBook, String ageGroup, String genre, String writingStyle, String description) {
+        return "Outline: " + storyBook.getTitle() + " is a short " + genre + " adventure for " + ageGroup + ". " +
+                "Main Characters: A curious child and a friendly animal companion. " +
+                "Setting: A bright and welcoming world. " +
+                "Theme: Friendship, kindness, and discovery. " +
+                "Moral: Be kind and brave. ";
+    }
+
+    private void normalizePageCollection(StoryBook storyBook) {
+        if (storyBook == null || storyBook.getPages() == null) {
+            return;
+        }
+
+        Map<Integer, StoryPage> uniquePages = new LinkedHashMap<>();
+        for (StoryPage page : storyBook.getPages()) {
+            if (!uniquePages.containsKey(page.getPageNumber())) {
+                uniquePages.put(page.getPageNumber(), page);
+            }
+        }
+
+        storyBook.getPages().clear();
+        storyBook.getPages().addAll(uniquePages.values());
+    }
 
     public String generateImageForPage(String storyText) throws InterruptedException {
         String prompt = "cartoon style, colorful, children book illustration, " + storyText + ", friendly, happy, no text";

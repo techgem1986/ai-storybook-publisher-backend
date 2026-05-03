@@ -15,6 +15,12 @@ type StoryBook {
     fontSize: Int
     fontStyle: String
     textBackground: String
+    outline: String
+    mainCharacters: String
+    setting: String
+    theme: String
+    moral: String
+    genre: String
 }
 
 type StoryPage {
@@ -40,6 +46,7 @@ type Mutation {
         description: String, 
         ageGroup: String, 
         writingStyle: String, 
+        genre: String,
         numberOfPages: Int
     ): StoryBook!
     
@@ -48,6 +55,7 @@ type Mutation {
         description: String,
         ageGroup: String,
         writingStyle: String,
+        genre: String,
         numberOfPages: Int
     ): StoryBook!
 

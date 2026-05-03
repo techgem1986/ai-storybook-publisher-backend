@@ -28,7 +28,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class PdfGenerationService {
@@ -80,7 +82,7 @@ public class PdfGenerationService {
             addTitlePage(document, storyBook.getTitle());
 
             // Story Pages
-            List<StoryPage> pages = storyBook.getPages();
+            List<StoryPage> pages = normalizePages(storyBook.getPages());
             for (int i = 0; i < pages.size(); i++) {
                 updateStatus(storyBook, "Adding page " + (i + 1) + " of " + pages.size() + " to PDF...");
                 addStoryPage(document, pages.get(i), storyBook);
@@ -101,6 +103,21 @@ public class PdfGenerationService {
             document.save(file);
             return file.getAbsolutePath();
         }
+    }
+
+    private List<StoryPage> normalizePages(List<StoryPage> pages) {
+        if (pages == null) {
+            return List.of();
+        }
+
+        Map<Integer, StoryPage> uniquePages = new LinkedHashMap<>();
+        for (StoryPage page : pages) {
+            if (!uniquePages.containsKey(page.getPageNumber())) {
+                uniquePages.put(page.getPageNumber(), page);
+            }
+        }
+
+        return new ArrayList<>(uniquePages.values());
     }
 
     private void addTitlePage(PDDocument document, String title) throws IOException {

@@ -20,6 +20,8 @@ public class StoryBook {
 
     private String writingStyle;
 
+    private String genre;
+
     private Integer numberOfPages;
 
     private String fontColor;
@@ -37,6 +39,19 @@ public class StoryBook {
     private String pdfStatus; // NOT_STARTED, IN_PROGRESS, COMPLETED, FAILED
 
     private String lastStatus;
+
+    @Column(columnDefinition = "TEXT")
+    private String outline;
+
+    @Column(columnDefinition = "TEXT")
+    private String mainCharacters;
+
+    private String setting;
+
+    private String theme;
+
+    @Column(columnDefinition = "TEXT")
+    private String moral;
 
     @OneToMany(mappedBy = "storyBook", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("pageNumber ASC")
@@ -76,6 +91,18 @@ public class StoryBook {
     public void setFontStyle(String fontStyle) { this.fontStyle = fontStyle; }
     public String getTextBackground() { return textBackground; }
     public void setTextBackground(String textBackground) { this.textBackground = textBackground; }
+    public String getOutline() { return outline; }
+    public void setOutline(String outline) { this.outline = outline; }
+    public String getMainCharacters() { return mainCharacters; }
+    public void setMainCharacters(String mainCharacters) { this.mainCharacters = mainCharacters; }
+    public String getSetting() { return setting; }
+    public void setSetting(String setting) { this.setting = setting; }
+    public String getTheme() { return theme; }
+    public void setTheme(String theme) { this.theme = theme; }
+    public String getMoral() { return moral; }
+    public void setMoral(String moral) { this.moral = moral; }
+    public String getGenre() { return genre; }
+    public void setGenre(String genre) { this.genre = genre; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public String getStatus() { return status; }
