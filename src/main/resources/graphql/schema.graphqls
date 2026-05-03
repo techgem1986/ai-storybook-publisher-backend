@@ -21,6 +21,7 @@ type StoryBook {
     theme: String
     moral: String
     genre: String
+    illustrationStyle: String
 }
 
 type StoryPage {
@@ -47,6 +48,7 @@ type Mutation {
         ageGroup: String, 
         writingStyle: String, 
         genre: String,
+        illustrationStyle: String,
         numberOfPages: Int
     ): StoryBook!
     
@@ -56,6 +58,7 @@ type Mutation {
         ageGroup: String,
         writingStyle: String,
         genre: String,
+        illustrationStyle: String,
         numberOfPages: Int
     ): StoryBook!
 
@@ -65,8 +68,11 @@ type Mutation {
         fontColor: String,
         fontSize: Int,
         fontStyle: String,
-        textBackground: String
+        textBackground: String,
+        illustrationStyle: String
     ): StoryBook!
+
+    regeneratePageImage(id: ID!, pageNumber: Int!): StoryPage!
 
     finalizeAndGenerateImages(id: ID!): StoryBook!
 

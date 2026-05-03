@@ -29,7 +29,7 @@ public class StoryBookResolver {
 
     @QueryMapping
     public StoryBook getStoryBook(@Argument Long id) {
-        StoryBook book = storyBookRepository.findById(id).orElse(null);
+        StoryBook book = storyBookRepository.findByIdWithPages(id).orElse(null);
         return normalizePages(book);
     }
 
@@ -64,6 +64,7 @@ public class StoryBookResolver {
             @Argument String ageGroup,
             @Argument String writingStyle,
             @Argument String genre,
+            @Argument String illustrationStyle,
             @Argument Integer numberOfPages) {
         logger.info("Received request to generate story book with title: {}", title);
         StoryBook storyBook = new StoryBook(title);
@@ -71,6 +72,7 @@ public class StoryBookResolver {
         storyBook.setAgeGroup(ageGroup);
         storyBook.setWritingStyle(writingStyle);
         storyBook.setGenre(genre);
+        storyBook.setIllustrationStyle(illustrationStyle);
         storyBook.setNumberOfPages(numberOfPages != null ? numberOfPages : 5);
         
         storyBook = storyBookRepository.save(storyBook);
@@ -93,6 +95,7 @@ public class StoryBookResolver {
             @Argument String ageGroup,
             @Argument String writingStyle,
             @Argument String genre,
+            @Argument String illustrationStyle,
             @Argument Integer numberOfPages) {
         logger.info("Received request to generate story draft with title: {}", title);
         StoryBook storyBook = new StoryBook(title);
@@ -100,6 +103,7 @@ public class StoryBookResolver {
         storyBook.setAgeGroup(ageGroup);
         storyBook.setWritingStyle(writingStyle);
         storyBook.setGenre(genre);
+        storyBook.setIllustrationStyle(illustrationStyle);
         storyBook.setNumberOfPages(numberOfPages != null ? numberOfPages : 5);
         
         storyBook = storyBookRepository.save(storyBook);
@@ -120,28 +124,16 @@ public class StoryBookResolver {
             @Argument String fontColor,
             @Argument Integer fontSize,
             @Argument String fontStyle,
-            @Argument String textBackground) {
-        StoryBook storyBook = storyBookRepository.findById(id).orElseThrow();
-        
-        // Update font settings
-        storyBook.setFontColor(fontColor);
-        storyBook.setFontSize(fontSize);
-        storyBook.setFontStyle(fontStyle);
-        storyBook.setTextBackground(textBackground);
-        
-        // Update pages
-        for (Map<String, Object> pageData : pages) {
-            Object pageNumObj = pageData.get("pageNumber");
-            int pageNum = (pageNumObj instanceof Integer) ? (Integer) pageNumObj : ((Long) pageNumObj).intValue();
-            String text = (String) pageData.get("text");
-            
-            storyBook.getPages().stream()
-                .filter(p -> p.getPageNumber() == pageNum)
-                .findFirst()
-                .ifPresent(p -> p.setText(text));
-        }
-        
-        return storyBookRepository.save(storyBook);
+            @Argument String textBackground,
+            @Argument String illustrationStyle) {
+        logger.info("Received request to update story content for book ID: {}", id);
+        return storyGenerationService.saveReviewEdits(id, pages, fontColor, fontSize, fontStyle, textBackground, illustrationStyle);
+    }
+
+    @MutationMapping
+    public StoryPage regeneratePageImage(@Argument Long id, @Argument Integer pageNumber) {
+        logger.info("Received request to regenerate image for book ID: {} page {}", id, pageNumber);
+        return storyGenerationService.regeneratePageImage(id, pageNumber);
     }
 
     @MutationMapping

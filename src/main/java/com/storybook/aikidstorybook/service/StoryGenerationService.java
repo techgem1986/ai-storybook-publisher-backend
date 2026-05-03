@@ -7,13 +7,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatusCode;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.retry.annotation.Backoff;
-import org.springframework.retry.annotation.Retryable;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpServerErrorException;
@@ -21,8 +20,8 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
+import java.net.URLEncoder;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -78,16 +77,9 @@ public class StoryGenerationService {
             for (int i = 0; i < totalPages; i++) {
                 logger.info("Generating image for page {} of book ID: {}", i + 1, storyBook.getId());
                 updateStatus(storyBook, "Creating illustration for page " + (i + 1) + " of " + totalPages + "...");
-                String imageUrl = generateImageForPage(storyPages.get(i));
+                String imageUrl = generateImageForPage(storyBook, storyPages.get(i), i + 1, totalPages);
                 StoryPage page = new StoryPage(i + 1, storyPages.get(i), imageUrl);
                 newPages.add(page);
-                
-                // Add a 60-second delay between image URL generation steps
-                try {
-                    Thread.sleep(60000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
             }
             
             // Add all pages at once after full generation to prevent duplicates
@@ -152,14 +144,8 @@ public class StoryGenerationService {
             for (int i = 0; i < totalPages; i++) {
                 StoryPage page = pages.get(i);
                 updateStatus(storyBook, "Creating illustration for page " + (i + 1) + " of " + totalPages + "...");
-                String imageUrl = generateImageForPage(page.getText());
+                String imageUrl = generateImageForPage(storyBook, page.getText(), i + 1, totalPages);
                 page.setImageUrl(imageUrl);
-                
-                try {
-                    Thread.sleep(30000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
             }
 
             storyBookRepository.save(storyBook);
@@ -175,17 +161,93 @@ public class StoryGenerationService {
         }
     }
 
+    public StoryBook saveReviewEdits(Long bookId,
+                                     List<Map<String, Object>> pageData,
+                                     String fontColor,
+                                     Integer fontSize,
+                                     String fontStyle,
+                                     String textBackground,
+                                     String illustrationStyle) {
+        StoryBook storyBook = storyBookRepository.findByIdWithPages(bookId).orElseThrow();
+        storyBook.setFontColor(fontColor);
+        storyBook.setFontSize(fontSize);
+        storyBook.setFontStyle(fontStyle);
+        storyBook.setTextBackground(textBackground);
+        storyBook.setIllustrationStyle(illustrationStyle);
+        storyBook.setStatus("REVIEW_PENDING");
+
+        normalizePageCollection(storyBook);
+        for (Map<String, Object> pageEntry : pageData) {
+            int pageNum = asInt(pageEntry.get("pageNumber"));
+            String text = pageEntry.get("text") instanceof String ? (String) pageEntry.get("text") : "";
+            storyBook.getPages().stream()
+                    .filter(p -> p.getPageNumber() == pageNum)
+                    .findFirst()
+                    .ifPresent(p -> p.setText(text));
+        }
+
+        List<String> validatedPages = new ArrayList<>();
+        for (StoryPage page : storyBook.getPages()) {
+            String safeText = storyValidationService.filterUnsafeWords(page.getText());
+            safeText = storyValidationService.correctCommonGrammar(safeText);
+            page.setText(safeText);
+            validatedPages.add(safeText);
+        }
+
+        List<String> warnings = storyValidationService.validateReadability(validatedPages, resolveAgeGroup(storyBook.getAgeGroup()));
+        if (!warnings.isEmpty()) {
+            storyBook.setLastStatus("Review validation warnings: " + String.join(" ", warnings));
+        } else {
+            storyBook.setLastStatus("Review edits saved and validated successfully.");
+        }
+
+        return storyBookRepository.save(storyBook);
+    }
+
+    public StoryPage regeneratePageImage(Long bookId, int pageNumber) {
+        StoryBook storyBook = storyBookRepository.findByIdWithPages(bookId).orElseThrow();
+        normalizePageCollection(storyBook);
+
+        StoryPage page = storyBook.getPages().stream()
+                .filter(p -> p.getPageNumber() == pageNumber)
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Page " + pageNumber + " not found."));
+
+        storyBook.setStatus("GENERATING");
+        updateStatus(storyBook, "Regenerating illustration for page " + pageNumber + "...");
+
+        String imageUrl = generateImageForPage(storyBook, page.getText(), pageNumber, storyBook.getPages().size());
+        page.setImageUrl(imageUrl);
+
+        storyBookRepository.save(storyBook);
+        storyBook.setStatus("REVIEW_PENDING");
+        updateStatus(storyBook, "Regenerated illustration for page " + pageNumber + ".");
+
+        return page;
+    }
+
+    private int asInt(Object value) {
+        if (value instanceof Integer integerValue) {
+            return integerValue;
+        }
+        if (value instanceof Long longValue) {
+            return longValue.intValue();
+        }
+        if (value instanceof String stringValue) {
+            try {
+                return Integer.parseInt(stringValue);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        throw new IllegalArgumentException("Cannot convert page number to int: " + value);
+    }
+
     private void updateStatus(StoryBook storyBook, String status) {
         logger.debug("Updating status for book ID {}: {}", storyBook.getId(), status);
         storyBookRepository.updateStatus(storyBook.getId(), storyBook.getStatus(), status);
         statusEmitterService.sendStatus(storyBook.getId(), status);
     }
 
-    @Retryable(
-            value = {RestClientException.class, HttpServerErrorException.class},
-            maxAttempts = 4,
-            backoff = @Backoff(delay = 2000, multiplier = 2)
-    )
     private List<String> generateStoryPages(StoryBook storyBook) {
         if (storyBook == null) {
             return List.of();
@@ -346,10 +408,11 @@ public class StoryGenerationService {
                     "stream", false
             );
             HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
-            ResponseEntity<Map> response = restTemplate.postForEntity(
+            ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
                     pollinationsTextUrl + "/openai",
+                    HttpMethod.POST,
                     request,
-                    Map.class
+                    new ParameterizedTypeReference<Map<String, Object>>() {}
             );
 
             if (response.getBody() != null) {
@@ -422,69 +485,125 @@ public class StoryGenerationService {
         storyBook.getPages().addAll(uniquePages.values());
     }
 
-    public String generateImageForPage(String storyText) throws InterruptedException {
-        String prompt = "cartoon style, colorful, children book illustration, " + storyText + ", friendly, happy, no text";
-        String encodedPrompt = null;
-        try {
-            encodedPrompt = java.net.URLEncoder.encode(prompt, "UTF-8");
+    public String generateImageForPage(StoryBook storyBook, String storyText, int pageNumber, int totalPages) {
+        String prompt = buildIllustrationPrompt(storyBook, storyText, pageNumber, totalPages);
+        String encodedPrompt;
 
+        try {
+            encodedPrompt = URLEncoder.encode(prompt, "UTF-8");
+        } catch (Exception e) {
+            logger.warn("Unable to encode image prompt, continuing with raw prompt.", e);
+            encodedPrompt = storyText.replaceAll("\\s+", "%20");
+        }
+
+        String endpoint = imageGeneratorUrl + "/generate-image";
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("prompt", prompt);
+        requestBody.put("width", 1024);
+        requestBody.put("height", 1024);
+        requestBody.put("return_type", "base64");
+
+        for (int attempt = 1; attempt <= 3; attempt++) {
             try {
                 SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-                requestFactory.setConnectTimeout(30000);
+                requestFactory.setConnectTimeout(20000);
                 requestFactory.setReadTimeout(60000);
                 RestTemplate restTemplate = new RestTemplate(requestFactory);
 
                 HttpHeaders headers = new HttpHeaders();
                 headers.setContentType(MediaType.APPLICATION_JSON);
 
-                Map<String, Object> requestBody = new HashMap<>();
-                requestBody.put("prompt", prompt);
-                requestBody.put("width", 1024);
-                requestBody.put("height", 768);
-                requestBody.put("return_type", "base64");
-
                 HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
-
-                String endpoint = imageGeneratorUrl + "/generate-image";
-                logger.info("Calling image generator service at {} with prompt: {}", endpoint, prompt);
-                logger.debug("Image generator request body: {}", requestBody);
-
-                ResponseEntity<Map> response = restTemplate.postForEntity(endpoint, request, Map.class);
-                logger.info("Image generator response status: {}", response.getStatusCode());
-                logger.debug("Image generator response body received successfully");
+                logger.info("Image generation attempt {} for book {} page {}/{}", attempt, storyBook.getId(), pageNumber, totalPages);
+                ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                        endpoint,
+                        HttpMethod.POST,
+                        request,
+                        new ParameterizedTypeReference<Map<String, Object>>() {}
+                );
 
                 if (response.getBody() != null) {
                     Object success = response.getBody().get("success");
-                    if (Boolean.TRUE.equals(success) && response.getBody().get("image") instanceof String) {
-                        String base64Image = (String) response.getBody().get("image");
-                        logger.info("Image generator returned base64 encoded image successfully");
-                        return base64Image;
+                    if (Boolean.TRUE.equals(success)) {
+                        if (response.getBody().get("image") instanceof String) {
+                            return (String) response.getBody().get("image");
+                        }
+                        if (response.getBody().get("image_url") instanceof String) {
+                            return (String) response.getBody().get("image_url");
+                        }
                     }
-                    logger.warn("Image generator returned an unexpected payload: {}", response.getBody());
+                    logger.warn("Image generator returned unexpected payload on attempt {}: {}", attempt, response.getBody());
                 } else {
-                    logger.warn("Image generator returned null body");
+                    logger.warn("Image generator returned null body on attempt {}", attempt);
                 }
-
             } catch (HttpServerErrorException e) {
-                logger.error("Image generator server error: {}", e.getStatusCode());
+                logger.error("Image generator server error on attempt {}: {}", attempt, e.getStatusCode());
                 logger.error("Response body: {}", e.getResponseBodyAsString());
             } catch (RestClientException e) {
-                logger.error("Image generator rest exception: {}", e.getMessage(), e);
+                logger.error("Image generator rest exception on attempt {}: {}", attempt, e.getMessage(), e);
             } catch (Exception e) {
-                logger.error("Unexpected error calling image generator: {}", e.getMessage(), e);
+                logger.error("Unexpected error calling image generator on attempt {}: {}", attempt, e.getMessage(), e);
             }
 
-            logger.info("Using Pollinations fallback for image generation");
-            return String.format("https://image.pollinations.ai/prompt/%s?width=1024&height=768&seed=%d",
-                    encodedPrompt,
-                    System.currentTimeMillis()
-            );
-        } catch (java.io.UnsupportedEncodingException e) {
-            logger.error("Failed to encode prompt, using placeholder image", e);
-            return String.format("https://image.pollinations.ai/prompt/children%s book illustration?width=1024&height=768&seed=%d",
-                    "%27s",
-                    System.currentTimeMillis()
-            );
+            if (attempt < 3) {
+                try {
+                    Thread.sleep(2000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
         }
+
+        logger.warn("Falling back to public image placeholder for prompt.");
+        return String.format("https://image.pollinations.ai/prompt/%s?width=1024&height=1024&seed=%d",
+                encodedPrompt,
+                System.currentTimeMillis()
+        );
+    }
+
+    private String buildIllustrationPrompt(StoryBook storyBook, String pageText, int pageNumber, int totalPages) {
+        String style = resolveIllustrationStyle(storyBook.getIllustrationStyle());
+        String characters = storyBook.getMainCharacters();
+        if (characters == null || characters.isBlank()) {
+            characters = "A kind child and a playful animal friend";
+        }
+        String setting = storyBook.getSetting();
+        if (setting == null || setting.isBlank()) {
+            setting = "a bright, friendly world";
+        }
+        String theme = storyBook.getTheme();
+        if (theme == null || theme.isBlank()) {
+            theme = "friendship and wonder";
+        }
+
+        StringBuilder promptBuilder = new StringBuilder();
+        promptBuilder.append("A high quality children's book illustration in a ")
+                .append(style)
+                .append(" style. ")
+                .append("Make the image feel warm, playful, and suitable for children. ")
+                .append("Main characters: ").append(characters).append(". ")
+                .append("Setting: ").append(setting).append(". ")
+                .append("Theme: ").append(theme).append(". ")
+                .append("Page ").append(pageNumber).append(" of ").append(totalPages).append(" should show: ")
+                .append(pageText).append(". ")
+                .append("Use bright colors, soft shapes, and a clear composition. ")
+                .append("Do not include words, text, logos, or signage. ")
+                .append("Keep the style consistent across all pages and avoid harsh shadows.");
+
+        return promptBuilder.toString();
+    }
+
+    private String resolveIllustrationStyle(String style) {
+        if (style == null || style.isBlank()) {
+            return "storybook watercolor";
+        }
+        return switch (style.toLowerCase()) {
+            case "cartoon" -> "cartoon";
+            case "digital flat" -> "digital flat";
+            case "paper-cut" -> "paper-cut";
+            case "storybook watercolor" -> "storybook watercolor";
+            default -> style;
+        };
     }
 }

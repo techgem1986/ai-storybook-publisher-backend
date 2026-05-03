@@ -14,6 +14,7 @@ public class StoryBook {
 
     private String title;
 
+    @Column(columnDefinition = "TEXT")
     private String description;
 
     private String ageGroup;
@@ -21,6 +22,8 @@ public class StoryBook {
     private String writingStyle;
 
     private String genre;
+
+    private String illustrationStyle;
 
     private Integer numberOfPages;
 
@@ -38,6 +41,7 @@ public class StoryBook {
 
     private String pdfStatus; // NOT_STARTED, IN_PROGRESS, COMPLETED, FAILED
 
+    @Column(columnDefinition = "TEXT")
     private String lastStatus;
 
     @Column(columnDefinition = "TEXT")
@@ -46,8 +50,10 @@ public class StoryBook {
     @Column(columnDefinition = "TEXT")
     private String mainCharacters;
 
+    @Column(columnDefinition = "TEXT")
     private String setting;
 
+    @Column(columnDefinition = "TEXT")
     private String theme;
 
     @Column(columnDefinition = "TEXT")
@@ -57,6 +63,7 @@ public class StoryBook {
     @OrderBy("pageNumber ASC")
     private List<StoryPage> pages = new ArrayList<>();
 
+    @Column(columnDefinition = "TEXT")
     private String pdfPath;
 
     public StoryBook() {
@@ -68,6 +75,7 @@ public class StoryBook {
     public StoryBook(String title) {
         this();
         this.title = title;
+        this.illustrationStyle = "storybook watercolor";
     }
 
     // Getters and Setters
@@ -103,6 +111,8 @@ public class StoryBook {
     public void setMoral(String moral) { this.moral = moral; }
     public String getGenre() { return genre; }
     public void setGenre(String genre) { this.genre = genre; }
+    public String getIllustrationStyle() { return illustrationStyle; }
+    public void setIllustrationStyle(String illustrationStyle) { this.illustrationStyle = illustrationStyle; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public String getStatus() { return status; }

@@ -43,6 +43,22 @@ The backend is a Spring Boot application designed to orchestrate the generation 
 | `imageUrl` | `String` | URL of the AI-generated illustration |
 | `storyBook` | `Relation`| Many-to-One with `StoryBook` |
 
+## 3.1 Database migration for existing schema
+If the app is running against an existing Postgres database, older `varchar(255)` columns on `story_book` must be widened to support generated text and metadata.
+
+Run this SQL in your database before starting the backend:
+
+```sql
+ALTER TABLE story_book ALTER COLUMN description TYPE TEXT;
+ALTER TABLE story_book ALTER COLUMN last_status TYPE TEXT;
+ALTER TABLE story_book ALTER COLUMN outline TYPE TEXT;
+ALTER TABLE story_book ALTER COLUMN main_characters TYPE TEXT;
+ALTER TABLE story_book ALTER COLUMN setting TYPE TEXT;
+ALTER TABLE story_book ALTER COLUMN theme TYPE TEXT;
+ALTER TABLE story_book ALTER COLUMN moral TYPE TEXT;
+ALTER TABLE story_book ALTER COLUMN pdf_path TYPE TEXT;
+```
+
 ## 4. API Specification
 ### GraphQL Interface
 - **Queries**:
