@@ -49,6 +49,12 @@ public class StoryGenerationService {
     @Autowired
     private RestTemplate restTemplate;
 
+    @Autowired
+    private InputSanitizationService sanitizationService;
+
+    @Autowired
+    private MetricsService metricsService;
+
     @Value("${pollinations.api.key:}")
     private String pollinationsApiKey;
 
@@ -85,6 +91,7 @@ public class StoryGenerationService {
                 String imageUrl = generateImageForPage(storyBook, storyPages.get(i), i + 1, totalPages);
                 StoryPage page = new StoryPage(i + 1, storyPages.get(i), imageUrl);
                 newPages.add(page);
+                metricsService.recordPageMetric(bookId, i + 1, "image_generation", "success");
             }
             
             // Add all pages at once after full generation to prevent duplicates
@@ -103,6 +110,8 @@ public class StoryGenerationService {
             updateStatus(storyBook, "Story content ready! Starting PDF creation...");
             logger.info("Story content generation completed for book ID: {}", storyBook.getId());
 
+            metricsService.recordOperationSuccess(bookId, "story_generation");
+
             // Trigger async PDF generation
             pdfGenerationService.generatePdf(storyBook.getId());
 
@@ -110,6 +119,7 @@ public class StoryGenerationService {
             logger.error("Error generating book ID: {}", storyBook.getId(), e);
             storyBook.setStatus("FAILED");
             updateStatus(storyBook, "Error: Generation failed.");
+            metricsService.recordOperationFailure(bookId, "story_generation", e.getMessage());
         }
     }
 
@@ -131,12 +141,14 @@ public class StoryGenerationService {
             storyBookRepository.save(storyBook);
             storyBook.setStatus("REVIEW_PENDING");
             updateStatus(storyBook, "Story draft ready for your review!");
+            metricsService.recordOperationSuccess(bookId, "story_draft");
             statusEmitterService.complete(storyBook.getId());
 
         } catch (Exception e) {
             logger.error("Error drafting book ID: {}", storyBook.getId(), e);
             storyBook.setStatus("FAILED");
             updateStatus(storyBook, "Error: Drafting failed.");
+            metricsService.recordOperationFailure(bookId, "story_draft", e.getMessage());
             statusEmitterService.complete(storyBook.getId());
         }
     }
@@ -157,6 +169,7 @@ public class StoryGenerationService {
                 updateStatus(storyBook, "Creating illustration for page " + (i + 1) + " of " + totalPages + "...");
                 String imageUrl = generateImageForPage(storyBook, page.getText(), i + 1, totalPages);
                 page.setImageUrl(imageUrl);
+                metricsService.recordPageMetric(bookId, i + 1, "image_generation", "success");
             }
 
             if (storyBook.getCoverImageUrl() == null || storyBook.getCoverImageUrl().isBlank()) {
@@ -169,12 +182,14 @@ public class StoryGenerationService {
             storyBook.setStatus("COMPLETED");
             updateStatus(storyBook, "Illustrations ready! Starting PDF creation...");
 
+            metricsService.recordOperationSuccess(bookId, "illustration_generation");
             pdfGenerationService.generatePdf(storyBook.getId());
 
         } catch (Exception e) {
             logger.error("Error generating illustrations for book ID: {}", storyBook.getId(), e);
             storyBook.setStatus("FAILED");
             updateStatus(storyBook, "Error: Illustration generation failed.");
+            metricsService.recordOperationFailure(bookId, "illustration_generation", e.getMessage());
         }
     }
 

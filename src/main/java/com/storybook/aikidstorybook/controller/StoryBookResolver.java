@@ -4,6 +4,9 @@ import com.storybook.aikidstorybook.entity.StoryBook;
 import com.storybook.aikidstorybook.entity.StoryPage;
 import com.storybook.aikidstorybook.repository.StoryBookRepository;
 import com.storybook.aikidstorybook.service.StoryGenerationService;
+import com.storybook.aikidstorybook.service.InputSanitizationService;
+import com.storybook.aikidstorybook.service.MetricsService;
+import com.storybook.aikidstorybook.service.MarketplaceExportService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,6 +29,15 @@ public class StoryBookResolver {
 
     @Autowired
     private StoryGenerationService storyGenerationService;
+
+    @Autowired
+    private InputSanitizationService sanitizationService;
+
+    @Autowired
+    private MetricsService metricsService;
+
+    @Autowired
+    private MarketplaceExportService marketplaceExportService;
 
     @QueryMapping
     public StoryBook getStoryBook(@Argument Long id) {
@@ -65,27 +77,49 @@ public class StoryBookResolver {
             @Argument String writingStyle,
             @Argument String genre,
             @Argument String illustrationStyle,
-            @Argument Integer numberOfPages) {
+            @Argument Integer numberOfPages,
+            @Argument String exportPreset) {
         logger.info("Received request to generate story book with title: {}", title);
-        StoryBook storyBook = new StoryBook(title);
-        storyBook.setDescription(description);
-        storyBook.setAgeGroup(ageGroup);
-        storyBook.setWritingStyle(writingStyle);
-        storyBook.setGenre(genre);
-        storyBook.setIllustrationStyle(illustrationStyle);
-        storyBook.setNumberOfPages(numberOfPages != null ? numberOfPages : 5);
         
-        storyBook = storyBookRepository.save(storyBook);
-        logger.info("Saved initial story book record with ID: {}", storyBook.getId());
-
         try {
-            storyGenerationService.generateCompleteStoryBook(storyBook.getId());
-            logger.info("Triggered async generation for book ID: {}", storyBook.getId());
-        } catch (Exception e) {
-            logger.error("Failed to trigger async generation for book ID: {}", storyBook.getId(), e);
-        }
+            // Sanitize inputs
+            String sanitizedTitle = sanitizationService.sanitizeTitle(title);
+            String sanitizedDescription = sanitizationService.sanitizeDescription(description);
+            
+            // Validate enum values
+            String[] ageGroups = {"3-5", "5-7", "7-9", "9-12"};
+            String[] genres = {"fantasy", "adventure", "educational", "bedtime"};
+            String validatedAgeGroup = sanitizationService.validateEnumValue(ageGroup, ageGroups, "ageGroup");
+            String validatedGenre = sanitizationService.validateEnumValue(genre, genres, "genre");
+            int validatedNumberOfPages = sanitizationService.validateNumberInRange(numberOfPages, 1, 50, "numberOfPages");
+            
+            StoryBook storyBook = new StoryBook(sanitizedTitle);
+            storyBook.setDescription(sanitizedDescription);
+            storyBook.setAgeGroup(validatedAgeGroup);
+            storyBook.setWritingStyle(writingStyle);
+            storyBook.setGenre(validatedGenre);
+            storyBook.setIllustrationStyle(illustrationStyle);
+            storyBook.setNumberOfPages(validatedNumberOfPages);
+            storyBook.setExportPreset(exportPreset != null ? exportPreset : "digital-download");
+            
+            storyBook = storyBookRepository.save(storyBook);
+            logger.info("Saved initial story book record with ID: {}", storyBook.getId());
 
-        return storyBook;
+            metricsService.recordOperationStart(storyBook.getId(), "story_generation");
+            
+            try {
+                storyGenerationService.generateCompleteStoryBook(storyBook.getId());
+                logger.info("Triggered async generation for book ID: {}", storyBook.getId());
+            } catch (Exception e) {
+                logger.error("Failed to trigger async generation for book ID: {}", storyBook.getId(), e);
+                metricsService.recordOperationFailure(storyBook.getId(), "story_generation", e.getMessage());
+            }
+
+            return storyBook;
+        } catch (IllegalArgumentException e) {
+            logger.error("Input validation failed: {}", e.getMessage());
+            throw new IllegalArgumentException("Invalid input: " + e.getMessage());
+        }
     }
 
     @MutationMapping
@@ -96,25 +130,47 @@ public class StoryBookResolver {
             @Argument String writingStyle,
             @Argument String genre,
             @Argument String illustrationStyle,
-            @Argument Integer numberOfPages) {
+            @Argument Integer numberOfPages,
+            @Argument String exportPreset) {
         logger.info("Received request to generate story draft with title: {}", title);
-        StoryBook storyBook = new StoryBook(title);
-        storyBook.setDescription(description);
-        storyBook.setAgeGroup(ageGroup);
-        storyBook.setWritingStyle(writingStyle);
-        storyBook.setGenre(genre);
-        storyBook.setIllustrationStyle(illustrationStyle);
-        storyBook.setNumberOfPages(numberOfPages != null ? numberOfPages : 5);
-        
-        storyBook = storyBookRepository.save(storyBook);
         
         try {
-            storyGenerationService.generateStoryDraft(storyBook.getId());
-        } catch (Exception e) {
-            logger.error("Failed to trigger story drafting for book ID: {}", storyBook.getId(), e);
+            // Sanitize inputs
+            String sanitizedTitle = sanitizationService.sanitizeTitle(title);
+            String sanitizedDescription = sanitizationService.sanitizeDescription(description);
+            
+            // Validate enum values
+            String[] ageGroups = {"3-5", "5-7", "7-9", "9-12"};
+            String[] genres = {"fantasy", "adventure", "educational", "bedtime"};
+            String validatedAgeGroup = sanitizationService.validateEnumValue(ageGroup, ageGroups, "ageGroup");
+            String validatedGenre = sanitizationService.validateEnumValue(genre, genres, "genre");
+            int validatedNumberOfPages = sanitizationService.validateNumberInRange(numberOfPages, 1, 50, "numberOfPages");
+            
+            StoryBook storyBook = new StoryBook(sanitizedTitle);
+            storyBook.setDescription(sanitizedDescription);
+            storyBook.setAgeGroup(validatedAgeGroup);
+            storyBook.setWritingStyle(writingStyle);
+            storyBook.setGenre(validatedGenre);
+            storyBook.setIllustrationStyle(illustrationStyle);
+            storyBook.setNumberOfPages(validatedNumberOfPages);
+            storyBook.setExportPreset(exportPreset != null ? exportPreset : "digital-download");
+            
+            storyBook = storyBookRepository.save(storyBook);
+            
+            metricsService.recordOperationStart(storyBook.getId(), "story_draft");
+            
+            try {
+                storyGenerationService.generateStoryDraft(storyBook.getId());
+            } catch (Exception e) {
+                logger.error("Failed to trigger story drafting for book ID: {}", storyBook.getId(), e);
+                metricsService.recordOperationFailure(storyBook.getId(), "story_draft", e.getMessage());
+            }
+            
+            return storyBook;
+        } catch (IllegalArgumentException e) {
+            logger.error("Input validation failed: {}", e.getMessage());
+            throw new IllegalArgumentException("Invalid input: " + e.getMessage());
         }
-        
-        return storyBook;
     }
 
     @MutationMapping

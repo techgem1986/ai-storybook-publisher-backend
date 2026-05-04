@@ -44,6 +44,12 @@ public class PdfGenerationService {
     @Autowired
     private StatusEmitterService statusEmitterService;
 
+    @Autowired
+    private MetricsService metricsService;
+
+    @Autowired
+    private MarketplaceExportService marketplaceExportService;
+
     @Value("${pollinations.api.key:demo}")
     private String pollinationsApiKey;
 
@@ -53,7 +59,11 @@ public class PdfGenerationService {
     @Async
     public void generatePdf(Long bookId) {
         StoryBook storyBook = storyBookRepository.findByIdWithPages(bookId).orElseThrow();
-        logger.info("Starting PDF generation for book ID: {}", storyBook.getId());
+        logger.info("Starting PDF generation for book ID: {} with export preset: {}", 
+                   storyBook.getId(), storyBook.getExportPreset());
+        
+        metricsService.recordOperationStart(bookId, "pdf_generation");
+        
         try {
             storyBook.setPdfStatus("IN_PROGRESS");
             updateStatus(storyBook, "Wrapping up your story into a PDF...");
@@ -63,12 +73,14 @@ public class PdfGenerationService {
             storyBook.setPdfPath(pdfPath);
             storyBook.setPdfStatus("COMPLETED");
             updateStatus(storyBook, "Success! Your book is ready for download.");
+            metricsService.recordOperationSuccess(bookId, "pdf_generation");
             statusEmitterService.complete(storyBook.getId());
 
         } catch (Exception e) {
             logger.error("Error generating PDF for book ID: {}", storyBook.getId(), e);
             storyBook.setPdfStatus("FAILED");
             updateStatus(storyBook, "Error: PDF generation failed.");
+            metricsService.recordOperationFailure(bookId, "pdf_generation", e.getMessage());
             statusEmitterService.complete(storyBook.getId());
         }
     }

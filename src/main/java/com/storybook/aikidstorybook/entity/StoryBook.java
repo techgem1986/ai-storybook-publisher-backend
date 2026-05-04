@@ -69,10 +69,13 @@ public class StoryBook {
     @Column(columnDefinition = "TEXT")
     private String coverImageUrl;
 
+    private String exportPreset; // amazon-kdp, etsy-printables, self-publish, digital-download
+
     public StoryBook() {
         this.createdAt = LocalDateTime.now();
         this.status = "PENDING";
         this.pdfStatus = "NOT_STARTED";
+        this.exportPreset = "digital-download";
     }
 
     public StoryBook(String title) {
@@ -131,6 +134,9 @@ public class StoryBook {
 
     public String getCoverImageUrl() { return coverImageUrl; }
     public void setCoverImageUrl(String coverImageUrl) { this.coverImageUrl = coverImageUrl; }
+
+    public String getExportPreset() { return exportPreset; }
+    public void setExportPreset(String exportPreset) { this.exportPreset = exportPreset; }
 
     public void addPage(StoryPage page) {
         pages.add(page);

@@ -22,6 +22,8 @@ type StoryBook {
     moral: String
     genre: String
     illustrationStyle: String
+    exportPreset: String
+    coverImageUrl: String
 }
 
 type StoryPage {
@@ -39,6 +41,26 @@ input StoryPageInput {
 type Query {
     getStoryBook(id: ID!): StoryBook
     getAllStoryBooks: [StoryBook!]!
+    getMetricsSummaryGQL: MetricsSummary
+    getOperationMetricsGQL(operationType: String!): OperationMetrics
+}
+
+type MetricsSummary {
+    totalOperations: Int!
+    totalSuccesses: Int!
+    totalFailures: Int!
+    successRate: Float!
+    averageDuration: Float!
+    timestamp: String!
+}
+
+type OperationMetrics {
+    operationType: String!
+    total: Int!
+    successes: Int!
+    failures: Int!
+    successRate: Float!
+    averageDuration: Float!
 }
 
 type Mutation {
@@ -49,7 +71,8 @@ type Mutation {
         writingStyle: String, 
         genre: String,
         illustrationStyle: String,
-        numberOfPages: Int
+        numberOfPages: Int,
+        exportPreset: String
     ): StoryBook!
     
     generateStoryDraft(
@@ -59,7 +82,8 @@ type Mutation {
         writingStyle: String,
         genre: String,
         illustrationStyle: String,
-        numberOfPages: Int
+        numberOfPages: Int,
+        exportPreset: String
     ): StoryBook!
 
     updateStoryContent(

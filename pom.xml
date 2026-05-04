@@ -84,6 +84,13 @@
             <version>0.34.0</version>
         </dependency>
 
+        <!-- Security & Input Sanitization -->
+        <dependency>
+            <groupId>com.googlecode.owasp-java-html-sanitizer</groupId>
+            <artifactId>owasp-java-html-sanitizer</artifactId>
+            <version>20220608.1</version>
+        </dependency>
+
         <!-- Utilities -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
