@@ -43,7 +43,9 @@ public class DownloadController {
             byte[] contents = Files.readAllBytes(file.toPath());
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_PDF);
-            headers.setContentDispositionFormData("attachment", file.getName());
+            String sanitizedTitle = storyBook.getTitle() != null ? storyBook.getTitle().replaceAll("[^a-zA-Z0-9_-]", "_") : "storybook";
+            String downloadFileName = sanitizedTitle + "-" + storyBook.getId() + ".pdf";
+            headers.setContentDispositionFormData("attachment", downloadFileName);
             return new ResponseEntity<>(contents, headers, HttpStatus.OK);
         } catch (IOException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();

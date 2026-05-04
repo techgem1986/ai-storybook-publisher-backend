@@ -66,6 +66,9 @@ public class StoryBook {
     @Column(columnDefinition = "TEXT")
     private String pdfPath;
 
+    @Column(columnDefinition = "TEXT")
+    private String coverImageUrl;
+
     public StoryBook() {
         this.createdAt = LocalDateTime.now();
         this.status = "PENDING";
@@ -125,6 +128,9 @@ public class StoryBook {
     public void setPages(List<StoryPage> pages) { this.pages = pages; }
     public String getPdfPath() { return pdfPath; }
     public void setPdfPath(String pdfPath) { this.pdfPath = pdfPath; }
+
+    public String getCoverImageUrl() { return coverImageUrl; }
+    public void setCoverImageUrl(String coverImageUrl) { this.coverImageUrl = coverImageUrl; }
 
     public void addPage(StoryPage page) {
         pages.add(page);

@@ -88,6 +88,12 @@ public class StoryGenerationService {
             normalizePageCollection(storyBook);
             storyBookRepository.save(storyBook);
 
+            String coverImageUrl = generateCoverImageForBook(storyBook);
+            if (coverImageUrl != null && !coverImageUrl.isBlank()) {
+                storyBook.setCoverImageUrl(coverImageUrl);
+                storyBookRepository.save(storyBook);
+            }
+
             storyBook.setStatus("COMPLETED");
             updateStatus(storyBook, "Story content ready! Starting PDF creation...");
             logger.info("Story content generation completed for book ID: {}", storyBook.getId());
@@ -148,6 +154,12 @@ public class StoryGenerationService {
                 page.setImageUrl(imageUrl);
             }
 
+            if (storyBook.getCoverImageUrl() == null || storyBook.getCoverImageUrl().isBlank()) {
+                String coverImageUrl = generateCoverImageForBook(storyBook);
+                if (coverImageUrl != null && !coverImageUrl.isBlank()) {
+                    storyBook.setCoverImageUrl(coverImageUrl);
+                }
+            }
             storyBookRepository.save(storyBook);
             storyBook.setStatus("COMPLETED");
             updateStatus(storyBook, "Illustrations ready! Starting PDF creation...");
@@ -487,13 +499,22 @@ public class StoryGenerationService {
 
     public String generateImageForPage(StoryBook storyBook, String storyText, int pageNumber, int totalPages) {
         String prompt = buildIllustrationPrompt(storyBook, storyText, pageNumber, totalPages);
-        String encodedPrompt;
+        return generateImageFromPrompt(storyBook, prompt, pageNumber, totalPages);
+    }
 
+    private String generateCoverImageForBook(StoryBook storyBook) {
+        String prompt = buildCoverPrompt(storyBook);
+        logger.info("Generating cover illustration for book ID: {}", storyBook.getId());
+        return generateImageFromPrompt(storyBook, prompt, 0, 0);
+    }
+
+    private String generateImageFromPrompt(StoryBook storyBook, String prompt, int pageNumber, int totalPages) {
+        String encodedPrompt;
         try {
             encodedPrompt = URLEncoder.encode(prompt, "UTF-8");
         } catch (Exception e) {
             logger.warn("Unable to encode image prompt, continuing with raw prompt.", e);
-            encodedPrompt = storyText.replaceAll("\\s+", "%20");
+            encodedPrompt = prompt.replaceAll("\\s+", "%20");
         }
 
         String endpoint = imageGeneratorUrl + "/generate-image";
@@ -514,7 +535,11 @@ public class StoryGenerationService {
                 headers.setContentType(MediaType.APPLICATION_JSON);
 
                 HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
-                logger.info("Image generation attempt {} for book {} page {}/{}", attempt, storyBook.getId(), pageNumber, totalPages);
+                if (pageNumber > 0 && totalPages > 0) {
+                    logger.info("Image generation attempt {} for book {} page {}/{}", attempt, storyBook.getId(), pageNumber, totalPages);
+                } else {
+                    logger.info("Image generation attempt {} for book {} cover image", attempt, storyBook.getId());
+                }
                 ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
                         endpoint,
                         HttpMethod.POST,
@@ -585,11 +610,39 @@ public class StoryGenerationService {
                 .append("Main characters: ").append(characters).append(". ")
                 .append("Setting: ").append(setting).append(". ")
                 .append("Theme: ").append(theme).append(". ")
-                .append("Page ").append(pageNumber).append(" of ").append(totalPages).append(" should show: ")
-                .append(pageText).append(". ")
+                .append("Illustrate the scene described by the text: ").append(pageText).append(". ")
                 .append("Use bright colors, soft shapes, and a clear composition. ")
-                .append("Do not include words, text, logos, or signage. ")
+                .append("Do not include any text, letters, words, logos, signage, or typography anywhere in the image. ")
                 .append("Keep the style consistent across all pages and avoid harsh shadows.");
+
+        return promptBuilder.toString();
+    }
+
+    private String buildCoverPrompt(StoryBook storyBook) {
+        String style = resolveIllustrationStyle(storyBook.getIllustrationStyle());
+        String characters = storyBook.getMainCharacters();
+        if (characters == null || characters.isBlank()) {
+            characters = "A kind child and a playful animal friend";
+        }
+        String setting = storyBook.getSetting();
+        if (setting == null || setting.isBlank()) {
+            setting = "a bright, friendly world";
+        }
+        String theme = storyBook.getTheme();
+        if (theme == null || theme.isBlank()) {
+            theme = "friendship and wonder";
+        }
+
+        StringBuilder promptBuilder = new StringBuilder();
+        promptBuilder.append("A high quality children's book cover illustration in a ")
+                .append(style)
+                .append(" style. ")
+                .append("Create a joyful, magical cover scene featuring ")
+                .append(characters).append(" in a beautiful ")
+                .append(setting).append(" setting. ")
+                .append("The illustration should feel inviting and whimsical, with bright colors and soft shapes. ")
+                .append("Do not include any text, title lettering, letters, words, logos, or signage anywhere in the image. ")
+                .append("The cover title will be added separately on the page, so keep the illustration free of typography.");
 
         return promptBuilder.toString();
     }
