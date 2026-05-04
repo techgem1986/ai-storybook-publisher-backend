@@ -13,10 +13,12 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.retry.backoff.FixedBackOffPolicy;
+import org.springframework.retry.policy.SimpleRetryPolicy;
+import org.springframework.retry.support.RetryTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpServerErrorException;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
@@ -43,6 +45,9 @@ public class StoryGenerationService {
 
     @Autowired
     private StoryValidationService storyValidationService;
+
+    @Autowired
+    private RestTemplate restTemplate;
 
     @Value("${pollinations.api.key:}")
     private String pollinationsApiKey;
@@ -402,7 +407,6 @@ public class StoryGenerationService {
     private String callAiForText(String prompt) {
         try {
             logger.info("Calling Pollinations AI for prompt");
-            RestTemplate restTemplate = new RestTemplate();
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
             if (pollinationsApiKey != null && !pollinationsApiKey.isBlank()) {
@@ -524,60 +528,55 @@ public class StoryGenerationService {
         requestBody.put("height", 1024);
         requestBody.put("return_type", "base64");
 
-        for (int attempt = 1; attempt <= 3; attempt++) {
-            try {
-                SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-                requestFactory.setConnectTimeout(20000);
-                requestFactory.setReadTimeout(60000);
-                RestTemplate restTemplate = new RestTemplate(requestFactory);
+        RetryTemplate retryTemplate = new RetryTemplate();
+        SimpleRetryPolicy retryPolicy = new SimpleRetryPolicy(3, Map.of(
+                RestClientException.class, true,
+                HttpServerErrorException.class, true
+        ));
+        FixedBackOffPolicy backOffPolicy = new FixedBackOffPolicy();
+        backOffPolicy.setBackOffPeriod(2000);
+        retryTemplate.setRetryPolicy(retryPolicy);
+        retryTemplate.setBackOffPolicy(backOffPolicy);
 
-                HttpHeaders headers = new HttpHeaders();
-                headers.setContentType(MediaType.APPLICATION_JSON);
-
-                HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
-                if (pageNumber > 0 && totalPages > 0) {
-                    logger.info("Image generation attempt {} for book {} page {}/{}", attempt, storyBook.getId(), pageNumber, totalPages);
-                } else {
-                    logger.info("Image generation attempt {} for book {} cover image", attempt, storyBook.getId());
-                }
-                ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
-                        endpoint,
-                        HttpMethod.POST,
-                        request,
-                        new ParameterizedTypeReference<Map<String, Object>>() {}
-                );
-
-                if (response.getBody() != null) {
-                    Object success = response.getBody().get("success");
-                    if (Boolean.TRUE.equals(success)) {
-                        if (response.getBody().get("image") instanceof String) {
-                            return (String) response.getBody().get("image");
-                        }
-                        if (response.getBody().get("image_url") instanceof String) {
-                            return (String) response.getBody().get("image_url");
-                        }
-                    }
-                    logger.warn("Image generator returned unexpected payload on attempt {}: {}", attempt, response.getBody());
-                } else {
-                    logger.warn("Image generator returned null body on attempt {}", attempt);
-                }
-            } catch (HttpServerErrorException e) {
-                logger.error("Image generator server error on attempt {}: {}", attempt, e.getStatusCode());
-                logger.error("Response body: {}", e.getResponseBodyAsString());
-            } catch (RestClientException e) {
-                logger.error("Image generator rest exception on attempt {}: {}", attempt, e.getMessage(), e);
-            } catch (Exception e) {
-                logger.error("Unexpected error calling image generator on attempt {}: {}", attempt, e.getMessage(), e);
+        Map<String, Object> responseBody = retryTemplate.execute(context -> {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
+            if (pageNumber > 0 && totalPages > 0) {
+                logger.info("Image generation attempt {} for book {} page {}/{}",
+                        context.getRetryCount() + 1, storyBook.getId(), pageNumber, totalPages);
+            } else {
+                logger.info("Image generation attempt {} for book {} cover image",
+                        context.getRetryCount() + 1, storyBook.getId());
             }
+            ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                    endpoint,
+                    HttpMethod.POST,
+                    request,
+                    new ParameterizedTypeReference<Map<String, Object>>() {}
+            );
+            if (response.getBody() == null) {
+                throw new RestClientException("Image generator returned empty response body");
+            }
+            return response.getBody();
+        }, context -> {
+            logger.warn("Image generation failed after {} attempts", context.getRetryCount());
+            return null;
+        });
 
-            if (attempt < 3) {
-                try {
-                    Thread.sleep(2000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
+        if (responseBody != null) {
+            Object success = responseBody.get("success");
+            if (Boolean.TRUE.equals(success)) {
+                Object imageValue = responseBody.get("image");
+                if (imageValue instanceof String) {
+                    return (String) imageValue;
+                }
+                Object imageUrl = responseBody.get("image_url");
+                if (imageUrl instanceof String) {
+                    return (String) imageUrl;
                 }
             }
+            logger.warn("Image generator returned unexpected response payload: {}", responseBody);
         }
 
         logger.warn("Falling back to public image placeholder for prompt.");

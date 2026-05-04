@@ -36,6 +36,19 @@ server:
     include-message: always
     include-binding-errors: always
 
+api:
+  key: ${API_KEY:}
+  client:
+    connect-timeout: 20000
+    read-timeout: 60000
+
+storybook:
+  output-dir: ${STORYBOOK_OUTPUT_DIR:./storage/storybooks}
+
+cleanup:
+  interval-ms: 3600000
+  retention-days: 7
+
 ai:
   story:
     pages: 10

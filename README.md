@@ -94,3 +94,9 @@ ALTER TABLE story_book ALTER COLUMN pdf_path TYPE TEXT;
 - **Containerization**: `Dockerfile` (Multi-stage build using Maven and OpenJDK 21).
 - **Persistence**: PostgreSQL container with volume mapping.
 - **Storage**: Local directory for generated PDFs, mapped as a volume.
+
+## 7. Configuration
+### Environment Variables
+- `API_KEY`: Optional API key for securing endpoints. When set, all `/api/**` endpoints require authentication via `x-api-key` header or `Authorization: Bearer` header. Leave unset for open access.
+- `STORYBOOK_OUTPUT_DIR`: Directory path for storing generated PDF files. Defaults to `./storage/storybooks`. Use a persistent volume in production to avoid data loss.
+

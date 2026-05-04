@@ -47,6 +47,9 @@ public class PdfGenerationService {
     @Value("${pollinations.api.key:demo}")
     private String pollinationsApiKey;
 
+    @Value("${storybook.output-dir:./storage/storybooks}")
+    private String outputDirectory;
+
     @Async
     public void generatePdf(Long bookId) {
         StoryBook storyBook = storyBookRepository.findByIdWithPages(bookId).orElseThrow();
@@ -90,10 +93,13 @@ public class PdfGenerationService {
                 addStoryPage(document, pages.get(i), storyBook, i + 1, pages.size(), totalPdfPages);
             }
 
-            Path tempDir = Files.createDirectories(Paths.get(System.getProperty("java.io.tmpdir"), "storybooks"));
+            Path outputDir = Paths.get(outputDirectory);
+            if (!Files.exists(outputDir)) {
+                Files.createDirectories(outputDir);
+            }
             String safeTitle = storyBook.getTitle() != null ? storyBook.getTitle().replaceAll("[^a-zA-Z0-9_-]", "_") : "storybook";
             String fileName = safeTitle + "-" + storyBook.getId() + "-print-ready.pdf";
-            File file = new File(tempDir.toFile(), fileName);
+            File file = new File(outputDir.toFile(), fileName);
 
             document.save(file);
             return file.getAbsolutePath();
